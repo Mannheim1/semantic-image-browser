@@ -10,7 +10,7 @@
 - Right-click "Find similar" searches using that image as input
 
 ### Search Modes
-- Visual embedding search: matches query text against image content via CLIP
+- Visual embedding search: matches query text against image content
 - OCR lexical search: keyword matching against extracted text (BM25)
 - OCR semantic search: embedding similarity against extracted text
 
@@ -42,8 +42,17 @@ All data is local. Images, embeddings, metadata, and thumbnails stored on disk.
 - OCR: Tesseract via leptess
 - Thumbnails: Windows Shell API
 
+### How Embedding Search Works
+Vision-language models (like CLIP, SigLIP) encode both images and text into vectors in a shared space. Similar concepts end up near each other regardless of whether they came from an image or text.
+
+- **Indexing**: Each image is encoded into a vector and stored
+- **Search**: The query text is encoded into a vector and compared against stored image vectors
+- **Constraint**: The same model must be used for both indexing and search. Embeddings from different models are incompatible (each model has its own vector space).
+
 ### Data Flow
-A search query is encoded into a vector. LanceDB performs vector search on visual embeddings and optionally FTS/vector search on OCR data. Results return paths and match source indicators. Thumbnails load from local cache. Opening an image launches the OS default viewer.
+1. **Indexing**: Images encoded → embeddings stored in LanceDB
+2. **Search**: Query text encoded → vector similarity search in LanceDB
+3. **Display**: Results return paths and match source indicators → thumbnails load from cache
 
 ### Database Schema (LanceDB/Arrow)
 - path: Utf8 (file path)
@@ -58,4 +67,4 @@ A search query is encoded into a vector. LanceDB performs vector search on visua
 Indexes: IVF-PQ on visual_embedding, IVF-PQ on ocr_embedding, FTS on ocr_text.
 
 ### Build Output
-Single Windows executable. No Python, no background services, no console windows.
+Single Windows executable. ONNX model bundled. No Python, no background services, no console windows.
