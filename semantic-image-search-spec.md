@@ -1,5 +1,30 @@
 # Semantic Image Search Desktop App
 
+## Development Phases
+
+### Phase 1: Dependencies & Skeleton
+Get Tauri + Svelte + LanceDB + ONNX Runtime compiling and running in a minimal app.
+
+### Phase 2: Data Layer
+File scanning, database schema, thumbnail caching.
+
+### Phase 3: UI Shell
+Search bar, thumbnail grid, context menus (with placeholder filename search).
+
+### Phase 4: Visual Embedding Search
+CLIP/SigLIP model integration for image-to-vector and text-to-vector.
+
+### Phase 5: OCR Pipeline
+Tesseract integration, text extraction, storage.
+
+### Phase 6: OCR Search
+Both lexical (BM25/FTS) and semantic (text embedding) search.
+
+### Phase 7: Integration
+Connect all three search modes to UI, result source indicators, settings.
+
+---
+
 ## Features
 
 ### Core Search
