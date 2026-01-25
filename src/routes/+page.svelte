@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { invoke, convertFileSrc } from "@tauri-apps/api/core";
+  import { invoke } from "@tauri-apps/api/core";
   import { open } from "@tauri-apps/plugin-dialog";
 
   interface ScanResult {
@@ -7,7 +7,6 @@
     images_added: number;
     images_updated: number;
     images_removed: number;
-    thumbnails_generated: number;
     errors: string[];
   }
 
@@ -26,7 +25,7 @@
   let statusMsg = $state("");
   let onnxMsg = $state("");
   let images = $state<ImageInfo[]>([]);
-  let thumbnailPaths = $state<Record<string, string>>({});
+  let thumbnails = $state<Record<string, string | null>>({});
 
   async function loadData() {
     try {
@@ -34,17 +33,23 @@
       indexedCount = await invoke("get_indexed_count");
       images = await invoke("get_all_images");
 
-      // Load thumbnails for each image
-      for (const img of images) {
-        if (!thumbnailPaths[img.path]) {
-          try {
-            const thumbPath: string = await invoke("get_thumbnail", { imagePath: img.path });
-            thumbnailPaths[img.path] = convertFileSrc(thumbPath);
-          } catch (e) {
-            console.error(`Failed to get thumbnail for ${img.path}:`, e);
+      // Load thumbnails for each image (in parallel for better performance)
+      const newThumbnails: Record<string, string | null> = { ...thumbnails };
+      await Promise.all(
+        images.map(async (img) => {
+          if (!(img.path in newThumbnails)) {
+            try {
+              // get_thumbnail now returns a base64 data URL directly
+              const dataUrl: string = await invoke("get_thumbnail", { imagePath: img.path });
+              newThumbnails[img.path] = dataUrl;
+            } catch (e) {
+              console.error(`Failed to get thumbnail for ${img.path}:`, e);
+              newThumbnails[img.path] = null; // Mark as failed
+            }
           }
-        }
-      }
+        })
+      );
+      thumbnails = newThumbnails;
     } catch (e) {
       statusMsg = `Error loading data: ${e}`;
     }
@@ -154,7 +159,6 @@
         <li>Images added: {scanResult.images_added}</li>
         <li>Images updated: {scanResult.images_updated}</li>
         <li>Images removed: {scanResult.images_removed}</li>
-        <li>Thumbnails generated: {scanResult.thumbnails_generated}</li>
       </ul>
       {#if scanResult.errors.length > 0}
         <details>
@@ -187,8 +191,10 @@
       <div class="image-grid">
         {#each images as img}
           <div class="image-card">
-            {#if thumbnailPaths[img.path]}
-              <img src={thumbnailPaths[img.path]} alt={img.path} class="thumbnail" />
+            {#if thumbnails[img.path]}
+              <img src={thumbnails[img.path]} alt={img.path} class="thumbnail" />
+            {:else if thumbnails[img.path] === null}
+              <div class="thumbnail-placeholder thumbnail-error">Failed</div>
             {:else}
               <div class="thumbnail-placeholder">Loading...</div>
             {/if}
@@ -379,6 +385,11 @@ summary {
   font-size: 0.8rem;
 }
 
+.thumbnail-error {
+  background: #ffebee;
+  color: #c62828;
+}
+
 .image-info {
   padding: 0.5rem;
   display: flex;
@@ -442,6 +453,11 @@ summary {
   .thumbnail-placeholder {
     background: #444;
     color: #999;
+  }
+
+  .thumbnail-error {
+    background: #5c2a2a;
+    color: #ffcdd2;
   }
 
   .meta {
