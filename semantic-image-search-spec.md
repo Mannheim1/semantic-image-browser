@@ -81,6 +81,18 @@ Vision-language models (like CLIP, SigLIP) encode both images and text into vect
 2. **Search**: Query text encoded → vector similarity search in LanceDB
 3. **Display**: Results return paths and match source indicators → thumbnails load from cache
 
+### Indexing Flow
+1. User selects one or more directories via native folder picker dialog
+2. App recursively scans selected directories for images
+3. New/modified images are processed (embeddings generated, thumbnails cached, metadata extracted)
+4. Deleted images are removed from the database
+5. Periodic re-scan keeps the database in sync with the filesystem
+
+Searches query the database only—no filesystem access at search time.
+
+### Configuration Storage
+Watched directories and app settings stored in a JSON file in the app data directory (separate from LanceDB).
+
 ### Database Schema (LanceDB/Arrow)
 - path: Utf8 (file path)
 - visual_embedding: FixedSizeList[Float32, N]
