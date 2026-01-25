@@ -8,6 +8,7 @@
     "opener:default",
     "fs:default",
     "fs:allow-applocaldata-read-recursive",
-    "fs:allow-applocaldata-write-recursive"
+    "fs:allow-applocaldata-write-recursive",
+    "dialog:default"
   ]
 }
