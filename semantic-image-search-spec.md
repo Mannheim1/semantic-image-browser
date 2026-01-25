@@ -51,6 +51,8 @@ Result thumbnails have background color indicating which search mode(s) produced
 ### Storage
 All data is local. Images, embeddings, metadata, and thumbnails stored on disk.
 
+Data location: OS standard app data directory (`app_local_data_dir`), with an optional setting to specify a custom location.
+
 ### Stretch Goals (not implemented initially)
 - Remote image hosting: images on NAS with only thumbnails and database local
 - macOS support
