@@ -3,11 +3,28 @@
 
   let name = $state("");
   let greetMsg = $state("");
+  let lancedbMsg = $state("");
+  let onnxMsg = $state("");
 
   async function greet(event: Event) {
     event.preventDefault();
-    // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
     greetMsg = await invoke("greet", { name });
+  }
+
+  async function testLanceDB() {
+    try {
+      lancedbMsg = await invoke("test_lancedb");
+    } catch (e) {
+      lancedbMsg = `Error: ${e}`;
+    }
+  }
+
+  async function testOnnx() {
+    try {
+      onnxMsg = await invoke("test_onnx");
+    } catch (e) {
+      onnxMsg = `Error: ${e}`;
+    }
   }
 </script>
 
@@ -32,6 +49,13 @@
     <button type="submit">Greet</button>
   </form>
   <p>{greetMsg}</p>
+
+  <div class="row" style="margin-top: 2em;">
+    <button onclick={testLanceDB}>Test LanceDB</button>
+    <button onclick={testOnnx} style="margin-left: 10px;">Test ONNX</button>
+  </div>
+  <p>{lancedbMsg}</p>
+  <p>{onnxMsg}</p>
 </main>
 
 <style>
