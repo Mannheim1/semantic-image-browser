@@ -61,7 +61,7 @@ All data is local. Images, embeddings, metadata, and thumbnails stored on disk.
 
 ### Stack
 - Desktop framework: Tauri v2
-- Frontend: Svelte + TypeScript + Tailwind CSS
+- Frontend: Svelte + TypeScript
 - Vector database: LanceDB (Rust client)
 - ML inference: ONNX Runtime
 - OCR: Tesseract via leptess
