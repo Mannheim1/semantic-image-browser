@@ -212,6 +212,7 @@ async fn scan_directory_internal(
 
         let needs_update = match database::get_image_by_path(table, &file.path).await {
             Ok(Some(db_modified)) => {
+                // File exists in DB, check if it was modified
                 if db_modified < file_modified_ms {
                     result.images_updated += 1;
                     true
@@ -220,12 +221,22 @@ async fn scan_directory_internal(
                 }
             }
             Ok(None) => {
+                // File not in DB - add it
                 result.images_added += 1;
                 true
             }
-            Err(e) => {
-                result.errors.push(format!("Error checking {}: {}", file.path, e));
+            Err(e) if e.contains("null byte") => {
+                // Path validation error - skip this specific file
+                result.errors.push(format!("Invalid path '{}': {}", file.path, e));
                 continue;
+            }
+            Err(e) => {
+                // Database infrastructure error - fail entire scan to prevent data loss
+                return Err(format!(
+                    "Database error while checking '{}': {}. Scan aborted to prevent data loss. \
+                    This usually indicates a database connection problem or corruption.",
+                    file.path, e
+                ));
             }
         };
 
