@@ -33,22 +33,19 @@
       indexedCount = await invoke("get_indexed_count");
       images = await invoke("get_all_images");
 
-      // Load thumbnails for each image (in parallel for better performance)
+      // Load thumbnails sequentially to avoid resource exhaustion
       const newThumbnails: Record<string, string | null> = { ...thumbnails };
-      await Promise.all(
-        images.map(async (img) => {
-          if (!(img.path in newThumbnails)) {
-            try {
-              // get_thumbnail now returns a base64 data URL directly
-              const dataUrl: string = await invoke("get_thumbnail", { imagePath: img.path });
-              newThumbnails[img.path] = dataUrl;
-            } catch (e) {
-              console.error(`Failed to get thumbnail for ${img.path}:`, e);
-              newThumbnails[img.path] = null; // Mark as failed
-            }
+      for (const img of images) {
+        if (!(img.path in newThumbnails)) {
+          try {
+            const dataUrl: string = await invoke("get_thumbnail", { imagePath: img.path });
+            newThumbnails[img.path] = dataUrl;
+          } catch (e) {
+            console.error(`Failed to get thumbnail for ${img.path}:`, e);
+            newThumbnails[img.path] = null;
           }
-        })
-      );
+        }
+      }
       thumbnails = newThumbnails;
     } catch (e) {
       statusMsg = `Error loading data: ${e}`;
