@@ -1,159 +1,122 @@
 use base64::{engine::general_purpose::STANDARD, Engine};
-use std::path::Path;
+use image::imageops::FilterType;
+use sha2::{Digest, Sha256};
+use std::fs;
+use std::path::{Path, PathBuf};
 
-#[cfg(windows)]
-use windows::{
-    core::HSTRING,
-    Win32::{
-        Graphics::Gdi::{
-            CreateCompatibleDC, DeleteDC, DeleteObject, GetDIBits, SelectObject, BITMAPINFO,
-            BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS,
-        },
-        System::Com::{CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED},
-        UI::Shell::{IShellItemImageFactory, SHCreateItemFromParsingName, SIIGBF_RESIZETOFIT},
-    },
-};
+const THUMBNAIL_SIZE: u32 = 256;
+const WEBP_QUALITY: f32 = 80.0;
 
-#[cfg(windows)]
-pub fn get_thumbnail_base64(path: &Path, requested_size: u32) -> Result<String, String> {
-    unsafe {
-        // Initialize COM for this thread
-        let com_initialized = CoInitializeEx(None, COINIT_APARTMENTTHREADED).is_ok();
+/// Computes the SHA-256 hash of a path string, returns hex-encoded
+fn path_to_hash(path: &Path) -> String {
+    let path_str = path.to_string_lossy();
+    let mut hasher = Sha256::new();
+    hasher.update(path_str.as_bytes());
+    let result = hasher.finalize();
+    hex::encode(result)
+}
 
-        let result = get_thumbnail_internal(path, requested_size);
+/// Returns the thumbnail file path for a given source image
+pub fn thumbnail_path(thumbnails_dir: &Path, source_path: &Path) -> PathBuf {
+    let hash = path_to_hash(source_path);
+    thumbnails_dir.join(format!("{}.webp", hash))
+}
 
-        // Uninitialize COM if we initialized it
-        if com_initialized {
-            CoUninitialize();
-        }
+/// Checks if a thumbnail exists and is up-to-date
+pub fn thumbnail_is_current(thumb_path: &Path, source_path: &Path) -> bool {
+    let thumb_meta = match fs::metadata(thumb_path) {
+        Ok(m) => m,
+        Err(_) => return false,
+    };
 
-        result
+    let source_meta = match fs::metadata(source_path) {
+        Ok(m) => m,
+        Err(_) => return false,
+    };
+
+    let thumb_mtime = thumb_meta.modified().ok();
+    let source_mtime = source_meta.modified().ok();
+
+    match (thumb_mtime, source_mtime) {
+        (Some(t), Some(s)) => t >= s,
+        _ => false,
     }
 }
 
-#[cfg(windows)]
-unsafe fn get_thumbnail_internal(path: &Path, requested_size: u32) -> Result<String, String> {
-    // Convert path to wide string
-    let path_str = path
-        .to_str()
-        .ok_or_else(|| "Invalid path encoding".to_string())?;
-    let wide_path = HSTRING::from(path_str);
+/// Generates a thumbnail for the given source image
+pub fn generate_thumbnail(source_path: &Path, thumb_path: &Path) -> Result<(), String> {
+    // Load the source image
+    let img = image::open(source_path)
+        .map_err(|e| format!("Failed to open image '{}': {}", source_path.display(), e))?;
 
-    // Create IShellItem from path
-    let shell_item: IShellItemImageFactory = SHCreateItemFromParsingName(&wide_path, None)
-        .map_err(|e| format!("Failed to create shell item for '{}': {}", path.display(), e))?;
+    // Resize to fit within THUMBNAIL_SIZE x THUMBNAIL_SIZE, preserving aspect ratio
+    let thumbnail = img.resize(THUMBNAIL_SIZE, THUMBNAIL_SIZE, FilterType::Lanczos3);
 
-    // Get thumbnail as HBITMAP
-    let size = windows::Win32::Foundation::SIZE {
-        cx: requested_size as i32,
-        cy: requested_size as i32,
-    };
+    // Encode as WebP
+    let rgba = thumbnail.to_rgba8();
+    let encoder = webp::Encoder::from_rgba(&rgba, rgba.width(), rgba.height());
+    let webp_data = encoder.encode(WEBP_QUALITY);
 
-    let hbitmap = shell_item
-        .GetImage(size, SIIGBF_RESIZETOFIT)
-        .map_err(|e| format!("Failed to get thumbnail for '{}': {}", path.display(), e))?;
+    // Ensure parent directory exists
+    if let Some(parent) = thumb_path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|e| format!("Failed to create thumbnails directory: {}", e))?;
+    }
 
-    // Convert HBITMAP to PNG bytes
-    let png_bytes = hbitmap_to_png(hbitmap, requested_size)?;
+    // Write to disk
+    fs::write(thumb_path, &*webp_data)
+        .map_err(|e| format!("Failed to write thumbnail '{}': {}", thumb_path.display(), e))?;
 
-    // Clean up GDI object
-    let _ = DeleteObject(hbitmap.into());
+    Ok(())
+}
+
+/// Gets a thumbnail as a base64 data URL, generating it if needed
+pub fn get_thumbnail_base64(thumbnails_dir: &Path, source_path: &Path) -> Result<String, String> {
+    let thumb_path = thumbnail_path(thumbnails_dir, source_path);
+
+    // Generate if missing or stale
+    if !thumbnail_is_current(&thumb_path, source_path) {
+        generate_thumbnail(source_path, &thumb_path)?;
+    }
+
+    // Read the thumbnail file
+    let data = fs::read(&thumb_path)
+        .map_err(|e| format!("Failed to read thumbnail '{}': {}", thumb_path.display(), e))?;
 
     // Return as base64 data URL
-    let base64_data = STANDARD.encode(&png_bytes);
-    Ok(format!("data:image/png;base64,{}", base64_data))
+    let base64_data = STANDARD.encode(&data);
+    Ok(format!("data:image/webp;base64,{}", base64_data))
 }
 
-#[cfg(windows)]
-unsafe fn hbitmap_to_png(
-    hbitmap: windows::Win32::Graphics::Gdi::HBITMAP,
-    _size: u32,
-) -> Result<Vec<u8>, String> {
-    use windows::Win32::Graphics::Gdi::{GetObjectW, BITMAP};
+/// Ensures a thumbnail exists for the given source image, generating if needed
+pub fn ensure_thumbnail(thumbnails_dir: &Path, source_path: &Path) -> Result<(), String> {
+    let thumb_path = thumbnail_path(thumbnails_dir, source_path);
 
-    // Get bitmap dimensions
-    let mut bitmap = BITMAP::default();
-    let result = GetObjectW(
-        hbitmap.into(),
-        std::mem::size_of::<BITMAP>() as i32,
-        Some(&mut bitmap as *mut _ as *mut _),
-    );
-    if result == 0 {
-        return Err("Failed to get bitmap info".to_string());
+    if !thumbnail_is_current(&thumb_path, source_path) {
+        generate_thumbnail(source_path, &thumb_path)?;
     }
 
-    let width = bitmap.bmWidth as u32;
-    let height = bitmap.bmHeight as u32;
-
-    // Create compatible DC
-    let hdc = CreateCompatibleDC(None);
-    if hdc.is_invalid() {
-        return Err("Failed to create compatible DC".to_string());
-    }
-
-    // Select bitmap into DC
-    let old_bitmap = SelectObject(hdc, hbitmap.into());
-
-    // Set up BITMAPINFO for 32-bit BGRA
-    let mut bmi = BITMAPINFO {
-        bmiHeader: BITMAPINFOHEADER {
-            biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
-            biWidth: width as i32,
-            biHeight: -(height as i32), // Negative for top-down DIB
-            biPlanes: 1,
-            biBitCount: 32,
-            biCompression: BI_RGB.0,
-            biSizeImage: 0,
-            biXPelsPerMeter: 0,
-            biYPelsPerMeter: 0,
-            biClrUsed: 0,
-            biClrImportant: 0,
-        },
-        bmiColors: [Default::default()],
-    };
-
-    // Allocate buffer for pixel data (BGRA)
-    let mut pixels: Vec<u8> = vec![0u8; (width * height * 4) as usize];
-
-    // Get the bits
-    let lines = GetDIBits(
-        hdc,
-        hbitmap,
-        0,
-        height,
-        Some(pixels.as_mut_ptr() as *mut _),
-        &mut bmi,
-        DIB_RGB_COLORS,
-    );
-
-    // Clean up GDI resources
-    SelectObject(hdc, old_bitmap);
-    let _ = DeleteDC(hdc);
-
-    if lines == 0 {
-        return Err("Failed to get DIB bits".to_string());
-    }
-
-    // Convert BGRA to RGBA
-    for chunk in pixels.chunks_exact_mut(4) {
-        chunk.swap(0, 2); // Swap B and R
-    }
-
-    // Encode to PNG using the image crate
-    let img =
-        image::RgbaImage::from_raw(width, height, pixels).ok_or("Failed to create image buffer")?;
-
-    let mut png_bytes: Vec<u8> = Vec::new();
-    img.write_to(
-        &mut std::io::Cursor::new(&mut png_bytes),
-        image::ImageFormat::Png,
-    )
-    .map_err(|e| format!("Failed to encode PNG: {}", e))?;
-
-    Ok(png_bytes)
+    Ok(())
 }
 
-#[cfg(not(windows))]
-pub fn get_thumbnail_base64(_path: &Path, _requested_size: u32) -> Result<String, String> {
-    Err("Thumbnail generation is only supported on Windows".to_string())
+/// Deletes the thumbnail for a given source image
+pub fn delete_thumbnail(thumbnails_dir: &Path, source_path: &Path) -> Result<(), String> {
+    let thumb_path = thumbnail_path(thumbnails_dir, source_path);
+
+    if thumb_path.exists() {
+        fs::remove_file(&thumb_path)
+            .map_err(|e| format!("Failed to delete thumbnail '{}': {}", thumb_path.display(), e))?;
+    }
+
+    Ok(())
+}
+
+/// Deletes thumbnails for multiple source images
+pub fn delete_thumbnails(thumbnails_dir: &Path, source_paths: &[String]) -> Result<(), String> {
+    for path_str in source_paths {
+        let source_path = Path::new(path_str);
+        // Ignore errors for individual deletions - the file might already be gone
+        let _ = delete_thumbnail(thumbnails_dir, source_path);
+    }
+    Ok(())
 }
