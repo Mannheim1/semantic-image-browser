@@ -240,7 +240,7 @@ async fn scan_directory_internal(
             to_upsert.push(ImageRecord {
                 path: file.path.clone(),
                 file_type: file.file_type,
-                file_size: file.file_size as i64,
+                file_size: file.file_size,
                 created_at: scanner::system_time_to_millis(file.created_at),
                 modified_at: file_modified_ms,
             });
