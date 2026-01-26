@@ -1,5 +1,6 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
+  import { convertFileSrc } from "@tauri-apps/api/core";
   import { open } from "@tauri-apps/plugin-dialog";
 
   interface ScanResult {
@@ -33,13 +34,13 @@
       indexedCount = await invoke("get_indexed_count");
       images = await invoke("get_all_images");
 
-      // Load thumbnails sequentially to avoid resource exhaustion
+      // Load thumbnail paths and convert to asset URLs
       const newThumbnails: Record<string, string | null> = { ...thumbnails };
       for (const img of images) {
         if (!(img.path in newThumbnails)) {
           try {
-            const dataUrl: string = await invoke("get_thumbnail", { imagePath: img.path });
-            newThumbnails[img.path] = dataUrl;
+            const thumbPath: string = await invoke("get_thumbnail_path", { imagePath: img.path });
+            newThumbnails[img.path] = convertFileSrc(thumbPath);
           } catch (e) {
             console.error(`Failed to get thumbnail for ${img.path}:`, e);
             newThumbnails[img.path] = null;

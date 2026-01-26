@@ -126,14 +126,14 @@ async fn rescan_all(app: AppHandle) -> Result<ScanResult, String> {
 }
 
 #[tauri::command]
-async fn get_thumbnail(app: AppHandle, image_path: String) -> Result<String, String> {
+async fn get_thumbnail_path(app: AppHandle, image_path: String) -> Result<String, String> {
     let cfg = config::load_config(&app)?;
     let thumb_dir = thumbnails_dir(&app, &cfg)?;
 
     // Run on blocking thread pool since image decoding is CPU-intensive
     tokio::task::spawn_blocking(move || {
         let source = Path::new(&image_path);
-        thumbnail::get_thumbnail_base64(&thumb_dir, source)
+        thumbnail::get_thumbnail_path_for_asset(&thumb_dir, source)
     })
     .await
     .map_err(|e| format!("Task join error: {}", e))?
@@ -285,7 +285,7 @@ pub fn run() {
             add_watched_directory,
             remove_watched_directory,
             rescan_all,
-            get_thumbnail,
+            get_thumbnail_path,
             get_watched_directories,
             get_indexed_count,
             get_all_images
