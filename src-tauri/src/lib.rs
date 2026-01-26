@@ -12,14 +12,9 @@ mod thumbnail;
 use config::AppConfig;
 use database::{ImageInfo, ImageRecord};
 
-fn thumbnails_dir(app: &AppHandle, config: &AppConfig) -> Result<PathBuf, String> {
-    match &config.custom_data_location {
-        Some(custom) => Ok(PathBuf::from(custom).join("thumbnails")),
-        None => {
-            let app_data = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
-            Ok(app_data.join("thumbnails"))
-        }
-    }
+fn thumbnails_dir(app: &AppHandle, _config: &AppConfig) -> Result<PathBuf, String> {
+    let app_data = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
+    Ok(app_data.join("thumbnails"))
 }
 
 #[derive(Debug, Clone, Serialize)]

@@ -6,7 +6,6 @@ use tauri::{AppHandle, Manager};
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AppConfig {
     pub watched_directories: Vec<String>,
-    pub custom_data_location: Option<String>,
 }
 
 pub fn config_path(app: &AppHandle) -> Result<PathBuf, String> {
