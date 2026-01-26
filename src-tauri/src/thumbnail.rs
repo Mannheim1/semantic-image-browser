@@ -70,7 +70,23 @@ pub fn generate_thumbnail(source_path: &Path, thumb_path: &Path) -> Result<(), S
     Ok(())
 }
 
-/// Gets a thumbnail as a base64 data URL, generating it if needed
+/// Gets the thumbnail file path for a source image, generating the thumbnail if needed.
+/// Returns the absolute path to the thumbnail file for use with Tauri's asset protocol.
+pub fn get_thumbnail_path_for_asset(thumbnails_dir: &Path, source_path: &Path) -> Result<String, String> {
+    let thumb_path = thumbnail_path(thumbnails_dir, source_path);
+
+    // Generate if missing or stale
+    if !thumbnail_is_current(&thumb_path, source_path) {
+        generate_thumbnail(source_path, &thumb_path)?;
+    }
+
+    // Return absolute path as string for asset protocol
+    Ok(thumb_path.to_string_lossy().to_string())
+}
+
+/// Gets a thumbnail as a base64 data URL, generating it if needed.
+/// DEPRECATED: Use get_thumbnail_path_for_asset with convertFileSrc instead for better performance.
+#[allow(dead_code)]
 pub fn get_thumbnail_base64(thumbnails_dir: &Path, source_path: &Path) -> Result<String, String> {
     let thumb_path = thumbnail_path(thumbnails_dir, source_path);
 

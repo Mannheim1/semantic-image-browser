@@ -143,9 +143,9 @@ Thumbnail filenames are SHA-256 hashes of the original image's absolute path, en
 6. Write to `{app_data}/thumbnails/{hash}.webp`
 
 #### Serving Thumbnails
-The `get_thumbnail` command returns a base64 data URL for the cached thumbnail file. The frontend displays this directly in `<img>` tags.
+The `get_thumbnail_path` command returns the absolute path to the cached thumbnail file. The frontend uses Tauri's `convertFileSrc()` to convert this to an `asset://` protocol URL, which the browser loads directly.
 
-Alternative: Use Tauri's asset protocol (`asset://`) to serve thumbnail files directly, avoiding base64 encoding overhead for large galleries.
+This approach avoids base64 encoding overhead (~33% size reduction), enables parallel browser loading, and provides automatic HTTP caching for better performance with large galleries.
 
 #### Cache Invalidation
 - When scanning, compare source file's `modified_at` timestamp against thumbnail file's mtime
