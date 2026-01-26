@@ -2,7 +2,7 @@ use std::path::Path;
 use std::time::SystemTime;
 use walkdir::WalkDir;
 
-const IMAGE_EXTENSIONS: &[&str] = &["jpg", "jpeg", "png", "gif", "webp", "bmp", "tiff", "tif", "avif"];
+const IMAGE_EXTENSIONS: &[&str] = &["jpg", "jpeg", "jfif", "png", "gif", "webp", "bmp", "tiff", "tif", "avif"];
 
 pub struct ScannedFile {
     pub path: String,
