@@ -1,8 +1,8 @@
 use ort::session::Session;
 use serde::Serialize;
 use std::collections::HashSet;
-use std::path::Path;
-use tauri::AppHandle;
+use std::path::{Path, PathBuf};
+use tauri::{AppHandle, Manager};
 
 mod config;
 mod database;
@@ -12,7 +12,15 @@ mod thumbnail;
 use config::AppConfig;
 use database::{ImageInfo, ImageRecord};
 
-const THUMBNAIL_SIZE: u32 = 256;
+fn thumbnails_dir(app: &AppHandle, config: &AppConfig) -> Result<PathBuf, String> {
+    match &config.custom_data_location {
+        Some(custom) => Ok(PathBuf::from(custom).join("thumbnails")),
+        None => {
+            let app_data = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
+            Ok(app_data.join("thumbnails"))
+        }
+    }
+}
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ScanResult {
@@ -52,6 +60,7 @@ async fn remove_watched_directory(app: AppHandle, path: String) -> Result<(), St
     cfg.watched_directories.retain(|p| p != &path);
     config::save_config(&app, &cfg)?;
 
+    let thumb_dir = thumbnails_dir(&app, &cfg)?;
     let db = database::open_connection(&app, &cfg).await?;
     let table = database::get_or_create_table(&db).await?;
 
@@ -64,6 +73,8 @@ async fn remove_watched_directory(app: AppHandle, path: String) -> Result<(), St
         .collect();
 
     if !to_remove.is_empty() {
+        // Delete thumbnails for removed images
+        thumbnail::delete_thumbnails(&thumb_dir, &to_remove)?;
         database::remove_images(&table, &to_remove).await?;
     }
 
@@ -73,6 +84,7 @@ async fn remove_watched_directory(app: AppHandle, path: String) -> Result<(), St
 #[tauri::command]
 async fn rescan_all(app: AppHandle) -> Result<ScanResult, String> {
     let cfg = config::load_config(&app)?;
+    let thumb_dir = thumbnails_dir(&app, &cfg)?;
 
     let mut total_result = ScanResult {
         images_found: 0,
@@ -88,7 +100,7 @@ async fn rescan_all(app: AppHandle) -> Result<ScanResult, String> {
     let mut all_seen_paths: HashSet<String> = HashSet::new();
 
     for dir in &cfg.watched_directories {
-        match scan_directory_internal(&table, dir).await {
+        match scan_directory_internal(&table, &thumb_dir, dir).await {
             Ok((result, seen_paths)) => {
                 total_result.images_found += result.images_found;
                 total_result.images_added += result.images_added;
@@ -110,6 +122,8 @@ async fn rescan_all(app: AppHandle) -> Result<ScanResult, String> {
 
     if !to_remove.is_empty() {
         total_result.images_removed = to_remove.len() as u32;
+        // Delete thumbnails for removed images
+        thumbnail::delete_thumbnails(&thumb_dir, &to_remove)?;
         database::remove_images(&table, &to_remove).await?;
     }
 
@@ -117,11 +131,14 @@ async fn rescan_all(app: AppHandle) -> Result<ScanResult, String> {
 }
 
 #[tauri::command]
-async fn get_thumbnail(image_path: String) -> Result<String, String> {
+async fn get_thumbnail(app: AppHandle, image_path: String) -> Result<String, String> {
+    let cfg = config::load_config(&app)?;
+    let thumb_dir = thumbnails_dir(&app, &cfg)?;
+
     // Run on blocking thread pool since image decoding is CPU-intensive
     tokio::task::spawn_blocking(move || {
         let source = Path::new(&image_path);
-        thumbnail::get_thumbnail_base64(source, THUMBNAIL_SIZE)
+        thumbnail::get_thumbnail_base64(&thumb_dir, source)
     })
     .await
     .map_err(|e| format!("Task join error: {}", e))?
@@ -157,13 +174,15 @@ async fn scan_directory_impl(
 ) -> Result<ScanResult, String> {
     let db = database::open_connection(app, cfg).await?;
     let table = database::get_or_create_table(&db).await?;
+    let thumb_dir = thumbnails_dir(app, cfg)?;
 
-    let (result, _) = scan_directory_internal(&table, dir).await?;
+    let (result, _) = scan_directory_internal(&table, &thumb_dir, dir).await?;
     Ok(result)
 }
 
 async fn scan_directory_internal(
     table: &lancedb::Table,
+    thumb_dir: &Path,
     dir: &str,
 ) -> Result<(ScanResult, HashSet<String>), String> {
     let dir_path = Path::new(dir);
@@ -184,6 +203,7 @@ async fn scan_directory_internal(
 
     let mut seen_paths: HashSet<String> = HashSet::new();
     let mut to_upsert: Vec<ImageRecord> = Vec::new();
+    let mut paths_needing_thumbnails: Vec<String> = Vec::new();
 
     for file in files {
         seen_paths.insert(file.path.clone());
@@ -210,6 +230,7 @@ async fn scan_directory_internal(
         };
 
         if needs_update {
+            paths_needing_thumbnails.push(file.path.clone());
             to_upsert.push(ImageRecord {
                 path: file.path.clone(),
                 file_type: file.file_type,
@@ -218,6 +239,25 @@ async fn scan_directory_internal(
                 modified_at: file_modified_ms,
             });
         }
+    }
+
+    // Generate thumbnails for new/updated images
+    if !paths_needing_thumbnails.is_empty() {
+        let thumb_dir_clone = thumb_dir.to_path_buf();
+        let thumbnail_errors = tokio::task::spawn_blocking(move || {
+            let mut errors = Vec::new();
+            for path_str in paths_needing_thumbnails {
+                let source_path = Path::new(&path_str);
+                if let Err(e) = thumbnail::ensure_thumbnail(&thumb_dir_clone, source_path) {
+                    errors.push(format!("Thumbnail error for {}: {}", path_str, e));
+                }
+            }
+            errors
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+
+        result.errors.extend(thumbnail_errors);
     }
 
     if !to_upsert.is_empty() {
