@@ -17,8 +17,8 @@
 //! native parameters instead of manual escaping.
 
 use arrow_array::{
-    Array, ArrayRef, Int64Array, RecordBatch, RecordBatchIterator, StringArray,
-    TimestampMillisecondArray,
+    Array, ArrayRef, RecordBatch, RecordBatchIterator, StringArray,
+    TimestampMillisecondArray, UInt64Array,
 };
 use arrow_schema::{DataType, Field, Schema, TimeUnit};
 use futures::TryStreamExt;
@@ -62,7 +62,7 @@ fn escape_sql_string(s: &str) -> Result<String, String> {
 pub struct ImageRecord {
     pub path: String,
     pub file_type: String,
-    pub file_size: i64,
+    pub file_size: u64,
     pub created_at: i64,
     pub modified_at: i64,
 }
@@ -93,7 +93,7 @@ pub fn create_schema() -> Arc<Schema> {
             true,
         ),
         Field::new("file_type", DataType::Utf8, false),
-        Field::new("file_size", DataType::Int64, false),
+        Field::new("file_size", DataType::UInt64, false),
         Field::new(
             "created_at",
             DataType::Timestamp(TimeUnit::Millisecond, None),
@@ -155,7 +155,7 @@ pub async fn upsert_images(table: &Table, records: Vec<ImageRecord>) -> Result<(
     let len = records.len();
     let paths: Vec<&str> = records.iter().map(|r| r.path.as_str()).collect();
     let file_types: Vec<&str> = records.iter().map(|r| r.file_type.as_str()).collect();
-    let file_sizes: Vec<i64> = records.iter().map(|r| r.file_size).collect();
+    let file_sizes: Vec<u64> = records.iter().map(|r| r.file_size).collect();
     let created_ats: Vec<i64> = records.iter().map(|r| r.created_at).collect();
     let modified_ats: Vec<i64> = records.iter().map(|r| r.modified_at).collect();
 
@@ -169,7 +169,7 @@ pub async fn upsert_images(table: &Table, records: Vec<ImageRecord>) -> Result<(
             Arc::new(StringArray::from(vec![None::<&str>; len])) as ArrayRef,
             create_null_embedding_array(OCR_EMBEDDING_DIM, len),
             Arc::new(StringArray::from(file_types)) as ArrayRef,
-            Arc::new(Int64Array::from(file_sizes)) as ArrayRef,
+            Arc::new(UInt64Array::from(file_sizes)) as ArrayRef,
             Arc::new(TimestampMillisecondArray::from(created_ats)) as ArrayRef,
             Arc::new(TimestampMillisecondArray::from(modified_ats)) as ArrayRef,
         ],
@@ -268,7 +268,7 @@ pub async fn get_image_by_path(table: &Table, path: &str) -> Result<Option<i64>,
 pub struct ImageInfo {
     pub path: String,
     pub file_type: String,
-    pub file_size: i64,
+    pub file_size: u64,
     pub created_at: i64,
     pub modified_at: i64,
 }
@@ -297,7 +297,7 @@ pub async fn get_all_images(table: &Table) -> Result<Vec<ImageInfo>, String> {
         let file_type_col = batch.column_by_name("file_type").ok_or("file_type not found")?
             .as_any().downcast_ref::<StringArray>().ok_or("file_type not string")?;
         let file_size_col = batch.column_by_name("file_size").ok_or("file_size not found")?
-            .as_any().downcast_ref::<Int64Array>().ok_or("file_size not i64")?;
+            .as_any().downcast_ref::<UInt64Array>().ok_or("file_size not u64")?;
         let created_col = batch.column_by_name("created_at").ok_or("created_at not found")?
             .as_any().downcast_ref::<TimestampMillisecondArray>().ok_or("created_at not ts")?;
         let modified_col = batch.column_by_name("modified_at").ok_or("modified_at not found")?
