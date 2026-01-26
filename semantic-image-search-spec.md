@@ -99,7 +99,7 @@ Watched directories and app settings stored in a JSON file in the app data direc
 - ocr_text: Utf8, nullable (FTS indexed)
 - ocr_embedding: FixedSizeList[Float32, M], nullable
 - file_type: Utf8
-- file_size: Int64
+- file_size: UInt64
 - created_at: Timestamp
 - modified_at: Timestamp
 
