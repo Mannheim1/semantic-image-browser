@@ -1,3 +1,21 @@
+//! Database layer for semantic image browser.
+//!
+//! # SQL Injection Prevention
+//!
+//! This module uses LanceDB's SQL-like query language for filtering operations.
+//! As of LanceDB v0.23.1, parameterized queries are not yet supported
+//! (see: https://github.com/lancedb/lancedb/issues/1368).
+//!
+//! To prevent SQL injection vulnerabilities, all user-provided string values
+//! are escaped using the `escape_sql_string()` function before being interpolated
+//! into SQL predicates. This function:
+//! - Doubles single quotes (SQL standard escaping)
+//! - Doubles backslashes (to prevent escape sequence attacks)
+//! - Rejects null bytes (invalid in SQL strings)
+//!
+//! **TODO**: Once LanceDB adds parameterized query support, migrate to using
+//! native parameters instead of manual escaping.
+
 use arrow_array::{
     Array, ArrayRef, Int64Array, RecordBatch, RecordBatchIterator, StringArray,
     TimestampMillisecondArray,
@@ -15,6 +33,31 @@ use crate::config::AppConfig;
 pub const TABLE_NAME: &str = "images";
 pub const VISUAL_EMBEDDING_DIM: i32 = 512;
 pub const OCR_EMBEDDING_DIM: i32 = 384;
+
+/// Escapes a string value for safe use in LanceDB SQL predicates.
+///
+/// LanceDB does not yet support parameterized queries (see lancedb/lancedb#1368).
+/// This function provides comprehensive escaping for string values used in SQL
+/// predicates like `only_if()` and `delete()`.
+///
+/// Escaping rules:
+/// - Single quotes (') are doubled ('')
+/// - Backslashes (\) are doubled (\\)
+/// - Null bytes are rejected (not allowed in SQL strings)
+///
+/// This prevents SQL injection while we wait for native parameter support.
+fn escape_sql_string(s: &str) -> Result<String, String> {
+    // Reject null bytes - they're not valid in SQL strings and could indicate
+    // an attack attempting to truncate the string
+    if s.contains('\0') {
+        return Err("Path contains null byte".to_string());
+    }
+
+    // Escape single quotes (SQL standard) and backslashes
+    let escaped = s.replace('\\', "\\\\").replace('\'', "''");
+
+    Ok(escaped)
+}
 
 pub struct ImageRecord {
     pub path: String,
@@ -153,7 +196,7 @@ pub async fn upsert_images(table: &Table, records: Vec<ImageRecord>) -> Result<(
 
 pub async fn remove_images(table: &Table, paths: &[String]) -> Result<(), String> {
     for path in paths {
-        let escaped = path.replace('\'', "''");
+        let escaped = escape_sql_string(path)?;
         table
             .delete(&format!("path = '{}'", escaped))
             .await
@@ -193,7 +236,7 @@ pub async fn get_all_paths(table: &Table) -> Result<Vec<String>, String> {
 }
 
 pub async fn get_image_by_path(table: &Table, path: &str) -> Result<Option<i64>, String> {
-    let escaped = path.replace('\'', "''");
+    let escaped = escape_sql_string(path)?;
     let batches: Vec<RecordBatch> = table
         .query()
         .only_if(format!("path = '{}'", escaped))
@@ -277,4 +320,65 @@ pub async fn get_all_images(table: &Table) -> Result<Vec<ImageInfo>, String> {
     }
 
     Ok(images)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_escape_sql_string_basic() {
+        assert_eq!(
+            escape_sql_string("normal_path.jpg").unwrap(),
+            "normal_path.jpg"
+        );
+    }
+
+    #[test]
+    fn test_escape_sql_string_single_quote() {
+        assert_eq!(
+            escape_sql_string("image's_file.jpg").unwrap(),
+            "image''s_file.jpg"
+        );
+    }
+
+    #[test]
+    fn test_escape_sql_string_backslash() {
+        assert_eq!(
+            escape_sql_string(r"C:\Users\test.jpg").unwrap(),
+            r"C:\\Users\\test.jpg"
+        );
+    }
+
+    #[test]
+    fn test_escape_sql_string_both() {
+        assert_eq!(
+            escape_sql_string(r"C:\User's\test.jpg").unwrap(),
+            r"C:\\User''s\\test.jpg"
+        );
+    }
+
+    #[test]
+    fn test_escape_sql_string_sql_injection_attempt() {
+        // Try to inject SQL: ' OR '1'='1
+        assert_eq!(
+            escape_sql_string("test' OR '1'='1.jpg").unwrap(),
+            "test'' OR ''1''=''1.jpg"
+        );
+    }
+
+    #[test]
+    fn test_escape_sql_string_null_byte() {
+        // Null bytes should be rejected
+        assert!(escape_sql_string("test\0.jpg").is_err());
+    }
+
+    #[test]
+    fn test_escape_sql_string_unicode() {
+        // Unicode should pass through unchanged
+        assert_eq!(
+            escape_sql_string("图片_文件.jpg").unwrap(),
+            "图片_文件.jpg"
+        );
+    }
 }
