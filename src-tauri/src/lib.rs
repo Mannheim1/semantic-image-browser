@@ -18,22 +18,19 @@ fn thumbnails_dir(app: &AppHandle, _config: &AppConfig) -> Result<PathBuf, Strin
     Ok(app_data.join("thumbnails"))
 }
 
-/// Canonicalizes a directory path for consistent storage and comparison.
-/// Returns an error if the path doesn't exist or can't be canonicalized.
-fn canonicalize_directory(path: &str) -> Result<String, String> {
-    let path = Path::new(path);
+/// Validates that a path exists and is a directory.
+fn validate_directory(path: &str) -> Result<(), String> {
+    let p = Path::new(path);
 
-    if !path.exists() {
-        return Err(format!("Directory does not exist: {}", path.display()));
+    if !p.exists() {
+        return Err(format!("Directory does not exist: {}", p.display()));
     }
 
-    if !path.is_dir() {
-        return Err(format!("Path is not a directory: {}", path.display()));
+    if !p.is_dir() {
+        return Err(format!("Path is not a directory: {}", p.display()));
     }
 
-    path.canonicalize()
-        .map(|p| p.to_string_lossy().to_string())
-        .map_err(|e| format!("Failed to canonicalize path '{}': {}", path.display(), e))
+    Ok(())
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -58,31 +55,28 @@ async fn get_config(app: AppHandle) -> Result<AppConfig, String> {
 
 #[tauri::command]
 async fn add_watched_directory(app: AppHandle, path: String) -> Result<ScanResult, String> {
-    let canonical_path = canonicalize_directory(&path)?;
+    validate_directory(&path)?;
     let mut cfg = config::load_config(&app)?;
 
-    if !cfg.watched_directories.contains(&canonical_path) {
-        cfg.watched_directories.push(canonical_path.clone());
+    if !cfg.watched_directories.contains(&path) {
+        cfg.watched_directories.push(path.clone());
         config::save_config(&app, &cfg)?;
     }
 
-    scan_directory_impl(&app, &cfg, &canonical_path).await
+    scan_directory_impl(&app, &cfg, &path).await
 }
 
 #[tauri::command]
 async fn remove_watched_directory(app: AppHandle, path: String) -> Result<(), String> {
-    // Canonicalize if the directory still exists, otherwise use stored path for removal
-    let canonical_path = canonicalize_directory(&path).unwrap_or(path);
-
     let mut cfg = config::load_config(&app)?;
-    cfg.watched_directories.retain(|p| p != &canonical_path);
+    cfg.watched_directories.retain(|p| p != &path);
     config::save_config(&app, &cfg)?;
 
     let thumb_dir = thumbnails_dir(&app, &cfg)?;
     let db = database::open_connection(&app, &cfg).await?;
     let table = database::get_or_create_table(&db).await?;
 
-    let removed_path = Path::new(&canonical_path);
+    let removed_path = Path::new(&path);
     let all_paths = database::get_all_paths(&table).await?;
     let to_remove: Vec<String> = all_paths
         .into_iter()
@@ -352,86 +346,29 @@ mod tests {
     use std::fs;
 
     #[test]
-    fn test_canonicalize_directory_basic() {
-        // Use temp dir which definitely exists
+    fn test_validate_directory_exists() {
         let temp = std::env::temp_dir();
-        let result = canonicalize_directory(temp.to_str().unwrap());
+        let result = validate_directory(temp.to_str().unwrap());
         assert!(result.is_ok());
-        // Result should be an absolute path
-        let canonical = result.unwrap();
-        assert!(Path::new(&canonical).is_absolute());
     }
 
     #[test]
-    fn test_canonicalize_directory_nonexistent() {
-        let result = canonicalize_directory("/this/path/definitely/does/not/exist/12345");
+    fn test_validate_directory_nonexistent() {
+        let result = validate_directory("/this/path/definitely/does/not/exist/12345");
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("does not exist"));
     }
 
     #[test]
-    fn test_canonicalize_directory_file_not_dir() {
-        // Create a temp file
+    fn test_validate_directory_file_not_dir() {
         let temp_dir = std::env::temp_dir();
-        let temp_file = temp_dir.join("test_canonicalize_file.txt");
+        let temp_file = temp_dir.join("test_validate_file.txt");
         fs::write(&temp_file, "test").unwrap();
 
-        let result = canonicalize_directory(temp_file.to_str().unwrap());
+        let result = validate_directory(temp_file.to_str().unwrap());
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("not a directory"));
 
-        // Cleanup
         let _ = fs::remove_file(&temp_file);
-    }
-
-    #[test]
-    fn test_canonicalize_directory_trailing_slash() {
-        let temp = std::env::temp_dir();
-        let with_slash = format!("{}/", temp.to_string_lossy());
-        let without_slash = temp.to_string_lossy().to_string();
-
-        let result_with = canonicalize_directory(&with_slash);
-        let result_without = canonicalize_directory(&without_slash);
-
-        assert!(result_with.is_ok());
-        assert!(result_without.is_ok());
-        // Both should canonicalize to the same path
-        assert_eq!(result_with.unwrap(), result_without.unwrap());
-    }
-
-    #[test]
-    fn test_canonicalize_directory_dot_segments() {
-        // Test that ./.. segments are resolved
-        let temp = std::env::temp_dir();
-        let with_dots = temp.join(".").join(".");
-
-        let result_dots = canonicalize_directory(with_dots.to_str().unwrap());
-        let result_clean = canonicalize_directory(temp.to_str().unwrap());
-
-        assert!(result_dots.is_ok());
-        assert!(result_clean.is_ok());
-        assert_eq!(result_dots.unwrap(), result_clean.unwrap());
-    }
-
-    #[test]
-    #[cfg(windows)]
-    fn test_canonicalize_directory_case_insensitive() {
-        // On Windows, paths are case-insensitive
-        // C:\Windows should equal c:\windows
-        let upper = "C:\\Windows";
-        let lower = "c:\\windows";
-
-        if Path::new(upper).exists() {
-            let result_upper = canonicalize_directory(upper);
-            let result_lower = canonicalize_directory(lower);
-
-            assert!(result_upper.is_ok());
-            assert!(result_lower.is_ok());
-            // Both should canonicalize to the same path
-            assert_eq!(
-                result_upper.unwrap().to_lowercase(),
-                result_lower.unwrap().to_lowercase()
-            );
-        }
     }
 }
