@@ -317,6 +317,57 @@ pub async fn get_all_images(table: &Table) -> Result<Vec<ImageInfo>, String> {
     Ok(images)
 }
 
+fn extract_images_from_batches(batches: Vec<RecordBatch>) -> Result<Vec<ImageInfo>, String> {
+    let mut images = Vec::new();
+    for batch in batches {
+        let path_col = batch.column_by_name("path").ok_or("path not found")?
+            .as_any().downcast_ref::<StringArray>().ok_or("path not string")?;
+        let file_type_col = batch.column_by_name("file_type").ok_or("file_type not found")?
+            .as_any().downcast_ref::<StringArray>().ok_or("file_type not string")?;
+        let file_size_col = batch.column_by_name("file_size").ok_or("file_size not found")?
+            .as_any().downcast_ref::<UInt64Array>().ok_or("file_size not u64")?;
+        let created_col = batch.column_by_name("created_at").ok_or("created_at not found")?
+            .as_any().downcast_ref::<TimestampMillisecondArray>().ok_or("created_at not ts")?;
+        let modified_col = batch.column_by_name("modified_at").ok_or("modified_at not found")?
+            .as_any().downcast_ref::<TimestampMillisecondArray>().ok_or("modified_at not ts")?;
+
+        for i in 0..batch.num_rows() {
+            images.push(ImageInfo {
+                path: path_col.value(i).to_string(),
+                file_type: file_type_col.value(i).to_string(),
+                file_size: file_size_col.value(i),
+                created_at: created_col.value(i),
+                modified_at: modified_col.value(i),
+            });
+        }
+    }
+    Ok(images)
+}
+
+pub async fn search_by_filename(table: &Table, query: &str) -> Result<Vec<ImageInfo>, String> {
+    let escaped = escape_sql_string(query)?;
+    let pattern = format!("%{}%", escaped);
+
+    let batches: Vec<RecordBatch> = table
+        .query()
+        .only_if(format!("path LIKE '{}' ", pattern))
+        .select(lancedb::query::Select::Columns(vec![
+            "path".to_string(),
+            "file_type".to_string(),
+            "file_size".to_string(),
+            "created_at".to_string(),
+            "modified_at".to_string(),
+        ]))
+        .execute()
+        .await
+        .map_err(|e: lancedb::Error| e.to_string())?
+        .try_collect()
+        .await
+        .map_err(|e: lancedb::Error| e.to_string())?;
+
+    extract_images_from_batches(batches)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
