@@ -192,9 +192,11 @@
                   </div>
                 {/each}
               {/if}
-              <button class="menu-btn" onclick={addDirectory}>Add Directory</button>
-              <button class="menu-btn" onclick={rescanAll} disabled={watchedDirectories.length === 0}>
-                Rescan All
+              <button class="menu-btn" onclick={addDirectory} disabled={isLoading}>
+                {isLoading ? "Scanning..." : "Add Directory"}
+              </button>
+              <button class="menu-btn" onclick={rescanAll} disabled={isLoading || watchedDirectories.length === 0}>
+                {isLoading ? "Scanning..." : "Rescan All"}
               </button>
             </div>
             <div class="menu-section">
