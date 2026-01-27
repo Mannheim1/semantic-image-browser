@@ -290,18 +290,34 @@ async fn scan_directory_internal(
         }
     }
 
-    // Generate thumbnails for new/updated images
+    // Generate thumbnails for new/updated images in parallel
     if !paths_needing_thumbnails.is_empty() {
         let thumb_dir_clone = thumb_dir.to_path_buf();
         let thumbnail_errors = tokio::task::spawn_blocking(move || {
-            let mut errors = Vec::new();
-            for path_str in paths_needing_thumbnails {
-                let source_path = Path::new(&path_str);
-                if let Err(e) = thumbnail::ensure_thumbnail(&thumb_dir_clone, source_path) {
-                    errors.push(format!("Thumbnail error for {}: {}", path_str, e));
+            use std::sync::Mutex;
+            let errors = Mutex::new(Vec::new());
+
+            std::thread::scope(|s| {
+                let num_threads = std::thread::available_parallelism()
+                    .map(|n| n.get())
+                    .unwrap_or(4);
+                let chunk_size = (paths_needing_thumbnails.len() + num_threads - 1) / num_threads;
+
+                for chunk in paths_needing_thumbnails.chunks(chunk_size) {
+                    let errors = &errors;
+                    let thumb_dir = &thumb_dir_clone;
+                    s.spawn(move || {
+                        for path_str in chunk {
+                            let source_path = Path::new(path_str);
+                            if let Err(e) = thumbnail::ensure_thumbnail(thumb_dir, source_path) {
+                                errors.lock().unwrap().push(format!("Thumbnail error for {}: {}", path_str, e));
+                            }
+                        }
+                    });
                 }
-            }
-            errors
+            });
+
+            errors.into_inner().unwrap()
         })
         .await
         .map_err(|e| e.to_string())?;
