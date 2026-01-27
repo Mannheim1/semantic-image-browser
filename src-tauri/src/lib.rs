@@ -3,6 +3,7 @@ use serde::Serialize;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Manager};
+use tauri_plugin_opener::OpenerExt;
 
 mod config;
 mod database;
@@ -183,6 +184,33 @@ async fn get_all_images(app: AppHandle) -> Result<Vec<ImageInfo>, String> {
     database::get_all_images(&table).await
 }
 
+#[tauri::command]
+async fn search_images(app: AppHandle, query: String) -> Result<Vec<ImageInfo>, String> {
+    let cfg = config::load_config(&app)?;
+    let db = database::open_connection(&app, &cfg).await?;
+    let table = database::get_or_create_table(&db).await?;
+
+    if query.trim().is_empty() {
+        database::get_all_images(&table).await
+    } else {
+        database::search_by_filename(&table, &query).await
+    }
+}
+
+#[tauri::command]
+async fn open_image(app: AppHandle, path: String) -> Result<(), String> {
+    app.opener()
+        .open_path(&path, None::<&str>)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn show_in_folder(app: AppHandle, path: String) -> Result<(), String> {
+    app.opener()
+        .reveal_item_in_dir(&path)
+        .map_err(|e| e.to_string())
+}
+
 async fn scan_directory_impl(
     app: &AppHandle,
     cfg: &AppConfig,
@@ -309,7 +337,10 @@ pub fn run() {
             get_thumbnail_path,
             get_watched_directories,
             get_indexed_count,
-            get_all_images
+            get_all_images,
+            search_images,
+            open_image,
+            show_in_folder
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

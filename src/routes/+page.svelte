@@ -19,448 +19,539 @@
     modified_at: number;
   }
 
-  let watchedDirectories = $state<string[]>([]);
-  let indexedCount = $state(0);
-  let scanResult = $state<ScanResult | null>(null);
-  let isScanning = $state(false);
-  let statusMsg = $state("");
-  let onnxMsg = $state("");
+  let searchQuery = $state("");
   let images = $state<ImageInfo[]>([]);
   let thumbnails = $state<Record<string, string | null>>({});
+  let isLoading = $state(false);
+  let watchedDirectories = $state<string[]>([]);
+  let indexedCount = $state(0);
 
-  async function loadData() {
+  // Settings menu state
+  let showSettingsMenu = $state(false);
+  let showOcrMenu = $state(false);
+  let ocrMode = $state<"disabled" | "lexical" | "semantic" | "both">("disabled");
+
+  // Context menu state
+  let contextMenu = $state<{ x: number; y: number; image: ImageInfo } | null>(null);
+
+  // Debounce timer
+  let searchTimeout: ReturnType<typeof setTimeout> | null = null;
+
+  async function loadThumbnails(imagesToLoad: ImageInfo[]) {
+    const newThumbnails: Record<string, string | null> = { ...thumbnails };
+    const missing = imagesToLoad.filter(img => !(img.path in newThumbnails));
+
+    await Promise.all(missing.map(async (img) => {
+      try {
+        const thumbPath: string = await invoke("get_thumbnail_path", { imagePath: img.path });
+        newThumbnails[img.path] = convertFileSrc(thumbPath);
+      } catch {
+        newThumbnails[img.path] = null;
+      }
+    }));
+
+    thumbnails = newThumbnails;
+  }
+
+  async function search(query: string) {
+    isLoading = true;
     try {
-      watchedDirectories = await invoke("get_watched_directories");
-      indexedCount = await invoke("get_indexed_count");
-      images = await invoke("get_all_images");
-
-      // Load thumbnail paths and convert to asset URLs (parallel)
-      const newThumbnails: Record<string, string | null> = { ...thumbnails };
-      const imagesToLoad = images.filter(img => !(img.path in newThumbnails));
-
-      await Promise.all(imagesToLoad.map(async (img) => {
-        try {
-          const thumbPath: string = await invoke("get_thumbnail_path", { imagePath: img.path });
-          newThumbnails[img.path] = convertFileSrc(thumbPath);
-        } catch (e) {
-          console.error(`Failed to get thumbnail for ${img.path}:`, e);
-          newThumbnails[img.path] = null;
-        }
-      }));
-
-      thumbnails = newThumbnails;
+      images = await invoke("search_images", { query });
+      await loadThumbnails(images);
     } catch (e) {
-      statusMsg = `Error loading data: ${e}`;
+      console.error("Search failed:", e);
     }
+    isLoading = false;
+  }
+
+  function handleSearchInput(e: Event) {
+    const value = (e.target as HTMLInputElement).value;
+    searchQuery = value;
+
+    if (searchTimeout) clearTimeout(searchTimeout);
+    searchTimeout = setTimeout(() => search(value), 300);
+  }
+
+  async function loadInitialData() {
+    watchedDirectories = await invoke("get_watched_directories");
+    indexedCount = await invoke("get_indexed_count");
+    await search("");
   }
 
   async function addDirectory() {
-    try {
-      const selected = await open({
-        directory: true,
-        multiple: false,
-        title: "Select folder to watch"
-      });
+    const selected = await open({
+      directory: true,
+      multiple: false,
+      title: "Select folder to watch"
+    });
 
-      if (selected) {
-        isScanning = true;
-        statusMsg = "Scanning...";
-        scanResult = await invoke("add_watched_directory", { path: selected });
-        await loadData();
-        statusMsg = "Scan complete!";
-        isScanning = false;
-      }
-    } catch (e) {
-      statusMsg = `Error: ${e}`;
-      isScanning = false;
+    if (selected) {
+      isLoading = true;
+      await invoke("add_watched_directory", { path: selected });
+      await loadInitialData();
+      isLoading = false;
     }
   }
 
   async function removeDirectory(path: string) {
-    try {
-      await invoke("remove_watched_directory", { path });
-      await loadData();
-      statusMsg = `Removed ${path}`;
-    } catch (e) {
-      statusMsg = `Error: ${e}`;
-    }
+    await invoke("remove_watched_directory", { path });
+    await loadInitialData();
   }
 
   async function rescanAll() {
-    try {
-      isScanning = true;
-      statusMsg = "Rescanning all directories...";
-      scanResult = await invoke("rescan_all");
-      await loadData();
-      statusMsg = "Rescan complete!";
-      isScanning = false;
-    } catch (e) {
-      statusMsg = `Error: ${e}`;
-      isScanning = false;
-    }
+    isLoading = true;
+    await invoke("rescan_all");
+    await loadInitialData();
+    isLoading = false;
   }
 
-  async function testOnnx() {
-    try {
-      onnxMsg = await invoke("test_onnx");
-    } catch (e) {
-      onnxMsg = `Error: ${e}`;
-    }
+  async function openImage(path: string) {
+    await invoke("open_image", { path });
+  }
+
+  async function showInFolder(path: string) {
+    await invoke("show_in_folder", { path });
+  }
+
+  function handleImageDblClick(img: ImageInfo) {
+    openImage(img.path);
+  }
+
+  function handleContextMenu(e: MouseEvent, img: ImageInfo) {
+    e.preventDefault();
+    contextMenu = { x: e.clientX, y: e.clientY, image: img };
+  }
+
+  function closeContextMenu() {
+    contextMenu = null;
+  }
+
+  function handleWindowClick() {
+    closeContextMenu();
+    showSettingsMenu = false;
+    showOcrMenu = false;
+  }
+
+  function getFilename(path: string): string {
+    return path.split(/[\\/]/).pop() || path;
   }
 
   $effect(() => {
-    loadData();
+    loadInitialData();
   });
 </script>
 
-<main class="container">
-  <h1>Semantic Image Browser</h1>
-  <p class="subtitle">Phase 2: Data Layer Test</p>
+<svelte:window onclick={handleWindowClick} />
 
-  <section>
-    <h2>Watched Directories</h2>
-    <div class="row">
-      <button onclick={addDirectory} disabled={isScanning}>Add Directory</button>
-      <button onclick={rescanAll} disabled={isScanning || watchedDirectories.length === 0}>
-        Rescan All
-      </button>
+<div class="app">
+  <header class="toolbar">
+    <input
+      type="text"
+      class="search-input"
+      placeholder="Search images..."
+      value={searchQuery}
+      oninput={handleSearchInput}
+    />
+
+    <div class="toolbar-buttons">
+      <div class="dropdown">
+        <button
+          class="toolbar-btn"
+          onclick={(e) => { e.stopPropagation(); showOcrMenu = !showOcrMenu; showSettingsMenu = false; }}
+        >
+          OCR: {ocrMode}
+        </button>
+        {#if showOcrMenu}
+          <div class="dropdown-menu" onclick={(e) => e.stopPropagation()}>
+            <button class="dropdown-item" class:active={ocrMode === "disabled"} onclick={() => { ocrMode = "disabled"; showOcrMenu = false; }}>Disabled</button>
+            <button class="dropdown-item" class:active={ocrMode === "lexical"} onclick={() => { ocrMode = "lexical"; showOcrMenu = false; }}>Lexical</button>
+            <button class="dropdown-item" class:active={ocrMode === "semantic"} onclick={() => { ocrMode = "semantic"; showOcrMenu = false; }}>Semantic</button>
+            <button class="dropdown-item" class:active={ocrMode === "both"} onclick={() => { ocrMode = "both"; showOcrMenu = false; }}>Both</button>
+          </div>
+        {/if}
+      </div>
+
+      <div class="dropdown">
+        <button
+          class="toolbar-btn gear-btn"
+          onclick={(e) => { e.stopPropagation(); showSettingsMenu = !showSettingsMenu; showOcrMenu = false; }}
+        >
+          &#9881;
+        </button>
+        {#if showSettingsMenu}
+          <div class="dropdown-menu settings-menu" onclick={(e) => e.stopPropagation()}>
+            <div class="menu-section">
+              <div class="menu-header">Watched Directories</div>
+              {#if watchedDirectories.length === 0}
+                <div class="menu-empty">No directories</div>
+              {:else}
+                {#each watchedDirectories as dir}
+                  <div class="dir-item">
+                    <span class="dir-path" title={dir}>{dir}</span>
+                    <button class="dir-remove" onclick={() => removeDirectory(dir)}>×</button>
+                  </div>
+                {/each}
+              {/if}
+              <button class="menu-btn" onclick={addDirectory}>Add Directory</button>
+              <button class="menu-btn" onclick={rescanAll} disabled={watchedDirectories.length === 0}>
+                Rescan All
+              </button>
+            </div>
+            <div class="menu-section">
+              <div class="menu-header">Debug</div>
+              <div class="menu-info">Indexed: {indexedCount} images</div>
+            </div>
+          </div>
+        {/if}
+      </div>
     </div>
+  </header>
 
-    {#if watchedDirectories.length === 0}
-      <p class="empty">No directories added yet. Click "Add Directory" to start.</p>
-    {:else}
-      <ul class="dir-list">
-        {#each watchedDirectories as dir}
-          <li>
-            <span class="dir-path">{dir}</span>
-            <button class="remove-btn" onclick={() => removeDirectory(dir)} disabled={isScanning}>
-              Remove
-            </button>
-          </li>
-        {/each}
-      </ul>
-    {/if}
-  </section>
-
-  <section>
-    <h2>Index Status</h2>
-    <p><strong>Indexed images:</strong> {indexedCount}</p>
-    {#if statusMsg}
-      <p class="status">{statusMsg}</p>
-    {/if}
-  </section>
-
-  {#if scanResult}
-    <section>
-      <h2>Last Scan Result</h2>
-      <ul class="scan-result">
-        <li>Images found: {scanResult.images_found}</li>
-        <li>Images added: {scanResult.images_added}</li>
-        <li>Images updated: {scanResult.images_updated}</li>
-        <li>Images removed: {scanResult.images_removed}</li>
-      </ul>
-      {#if scanResult.errors.length > 0}
-        <details>
-          <summary>Errors ({scanResult.errors.length})</summary>
-          <ul class="errors">
-            {#each scanResult.errors as error}
-              <li>{error}</li>
-            {/each}
-          </ul>
-        </details>
-      {/if}
-    </section>
-  {/if}
-
-  <section>
-    <h2>Dependency Tests</h2>
-    <div class="row">
-      <button onclick={testOnnx}>Test ONNX</button>
-    </div>
-    {#if onnxMsg}
-      <p class="status">{onnxMsg}</p>
-    {/if}
-  </section>
-
-  <section>
-    <h2>Debug: Indexed Images</h2>
-    {#if images.length === 0}
-      <p class="empty">No images indexed yet.</p>
+  <main class="grid-container">
+    {#if images.length === 0 && !isLoading}
+      <div class="empty-state">
+        {#if watchedDirectories.length === 0}
+          <p>No directories added. Click the gear icon to add a directory.</p>
+        {:else}
+          <p>No images found.</p>
+        {/if}
+      </div>
     {:else}
       <div class="image-grid">
         {#each images as img}
-          <div class="image-card">
+          <div
+            class="image-cell"
+            ondblclick={() => handleImageDblClick(img)}
+            oncontextmenu={(e) => handleContextMenu(e, img)}
+          >
             {#if thumbnails[img.path]}
-              <img src={thumbnails[img.path]} alt={img.path} class="thumbnail" />
+              <img src={thumbnails[img.path]} alt="" class="thumbnail" />
             {:else if thumbnails[img.path] === null}
-              <div class="thumbnail-placeholder thumbnail-error">Failed</div>
+              <div class="thumbnail-placeholder">!</div>
             {:else}
-              <div class="thumbnail-placeholder">Loading...</div>
+              <div class="thumbnail-placeholder"></div>
             {/if}
-            <div class="image-info">
-              <span class="filename" title={img.path}>{img.path.split(/[\\/]/).pop()}</span>
-              <span class="meta">{img.file_type} · {(img.file_size / 1024).toFixed(1)} KB</span>
-            </div>
+            <span class="filename">{getFilename(img.path)}</span>
           </div>
         {/each}
       </div>
     {/if}
-  </section>
-</main>
+  </main>
+
+  {#if contextMenu}
+    <div
+      class="context-menu"
+      style="left: {contextMenu.x}px; top: {contextMenu.y}px;"
+      onclick={(e) => e.stopPropagation()}
+    >
+      <button class="context-item" onclick={() => { openImage(contextMenu!.image.path); closeContextMenu(); }}>
+        Open
+      </button>
+      <button class="context-item" onclick={() => { showInFolder(contextMenu!.image.path); closeContextMenu(); }}>
+        Show in folder
+      </button>
+      <button class="context-item disabled" disabled>
+        Find similar
+      </button>
+    </div>
+  {/if}
+</div>
 
 <style>
-:root {
-  font-family: Inter, Avenir, Helvetica, Arial, sans-serif;
-  font-size: 16px;
-  line-height: 24px;
-  font-weight: 400;
-  color: #0f0f0f;
-  background-color: #f6f6f6;
-  font-synthesis: none;
-  text-rendering: optimizeLegibility;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-}
-
-.container {
-  max-width: 800px;
-  margin: 0 auto;
-  padding: 2rem;
-}
-
-h1 {
-  text-align: center;
-  margin-bottom: 0.5rem;
-}
-
-.subtitle {
-  text-align: center;
-  color: #666;
-  margin-bottom: 2rem;
-}
-
-section {
-  background: #fff;
-  border-radius: 8px;
-  padding: 1.5rem;
-  margin-bottom: 1.5rem;
-  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
-}
-
-h2 {
-  margin-top: 0;
-  margin-bottom: 1rem;
-  font-size: 1.25rem;
-}
-
-.row {
-  display: flex;
-  gap: 0.5rem;
-  margin-bottom: 1rem;
-}
-
-button {
-  border-radius: 8px;
-  border: 1px solid transparent;
-  padding: 0.6em 1.2em;
-  font-size: 1em;
-  font-weight: 500;
-  font-family: inherit;
-  color: #0f0f0f;
-  background-color: #e8e8e8;
-  cursor: pointer;
-  transition: all 0.2s;
-}
-
-button:hover:not(:disabled) {
-  background-color: #d0d0d0;
-  border-color: #396cd8;
-}
-
-button:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-.empty {
-  color: #666;
-  font-style: italic;
-}
-
-.dir-list {
-  list-style: none;
-  padding: 0;
-  margin: 0;
-}
-
-.dir-list li {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 0.75rem;
-  background: #f9f9f9;
-  border-radius: 4px;
-  margin-bottom: 0.5rem;
-}
-
-.dir-path {
-  font-family: monospace;
-  font-size: 0.9rem;
-  word-break: break-all;
-}
-
-.remove-btn {
-  padding: 0.3em 0.8em;
-  font-size: 0.85em;
-  background-color: #ffebee;
-  color: #c62828;
-}
-
-.remove-btn:hover:not(:disabled) {
-  background-color: #ffcdd2;
-}
-
-.status {
-  padding: 0.5rem;
-  background: #e3f2fd;
-  border-radius: 4px;
-  font-size: 0.9rem;
-}
-
-.scan-result {
-  list-style: none;
-  padding: 0;
-  margin: 0;
-}
-
-.scan-result li {
-  padding: 0.25rem 0;
-}
-
-details {
-  margin-top: 1rem;
-}
-
-summary {
-  cursor: pointer;
-  color: #c62828;
-}
-
-.errors {
-  font-size: 0.85rem;
-  color: #c62828;
-  max-height: 200px;
-  overflow-y: auto;
-}
-
-.image-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
-  gap: 1rem;
-}
-
-.image-card {
-  background: #f0f0f0;
-  border-radius: 8px;
-  overflow: hidden;
-  display: flex;
-  flex-direction: column;
-}
-
-.thumbnail {
-  width: 100%;
-  aspect-ratio: 1;
-  object-fit: cover;
-}
-
-.thumbnail-placeholder {
-  width: 100%;
-  aspect-ratio: 1;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: #ddd;
-  color: #666;
-  font-size: 0.8rem;
-}
-
-.thumbnail-error {
-  background: #ffebee;
-  color: #c62828;
-}
-
-.image-info {
-  padding: 0.5rem;
-  display: flex;
-  flex-direction: column;
-  gap: 0.25rem;
-}
-
-.filename {
-  font-size: 0.85rem;
-  font-weight: 500;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.meta {
-  font-size: 0.75rem;
-  color: #666;
-}
-
-@media (prefers-color-scheme: dark) {
   :root {
-    color: #f6f6f6;
-    background-color: #1a1a1a;
+    --bg-base: #1a1412;
+    --bg-toolbar: #2a2220;
+    --bg-hover: #3a3230;
+    --text-primary: #e0d6d0;
+    --text-secondary: #a09590;
+    --border-color: #3a3230;
+    --source-visual: #1a1412;
+    --source-ocr-lexical: #1a2e1a;
+    --source-ocr-semantic: #1a1a2e;
   }
 
-  section {
-    background: #2a2a2a;
+  :global(body) {
+    margin: 0;
+    padding: 0;
+    background: var(--bg-base);
+    color: var(--text-primary);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    font-size: 14px;
+    overflow: hidden;
   }
 
-  button {
-    color: #f6f6f6;
-    background-color: #3a3a3a;
+  .app {
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+    width: 100vw;
   }
 
-  button:hover:not(:disabled) {
-    background-color: #4a4a4a;
+  .toolbar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px;
+    background: var(--bg-toolbar);
+    border-bottom: 1px solid var(--border-color);
+    flex-shrink: 0;
   }
 
-  .dir-list li {
-    background: #333;
+  .search-input {
+    flex: 1;
+    padding: 8px 12px;
+    background: var(--bg-base);
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    color: var(--text-primary);
+    font-size: 14px;
+    outline: none;
   }
 
-  .status {
-    background: #1e3a5f;
+  .search-input:focus {
+    border-color: #5a5250;
   }
 
-  .remove-btn {
-    background-color: #5c2a2a;
-    color: #ffcdd2;
+  .search-input::placeholder {
+    color: var(--text-secondary);
   }
 
-  .remove-btn:hover:not(:disabled) {
-    background-color: #7c3a3a;
+  .toolbar-buttons {
+    display: flex;
+    gap: 4px;
   }
 
-  .image-card {
-    background: #3a3a3a;
+  .toolbar-btn {
+    padding: 8px 12px;
+    background: var(--bg-base);
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    color: var(--text-primary);
+    cursor: pointer;
+    font-size: 13px;
+  }
+
+  .toolbar-btn:hover {
+    background: var(--bg-hover);
+  }
+
+  .gear-btn {
+    font-size: 16px;
+    padding: 8px 10px;
+  }
+
+  .dropdown {
+    position: relative;
+  }
+
+  .dropdown-menu {
+    position: absolute;
+    top: 100%;
+    right: 0;
+    margin-top: 4px;
+    background: var(--bg-toolbar);
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    min-width: 120px;
+    z-index: 100;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+  }
+
+  .dropdown-item {
+    display: block;
+    width: 100%;
+    padding: 8px 12px;
+    background: none;
+    border: none;
+    color: var(--text-primary);
+    text-align: left;
+    cursor: pointer;
+    font-size: 13px;
+  }
+
+  .dropdown-item:hover {
+    background: var(--bg-hover);
+  }
+
+  .dropdown-item.active {
+    background: var(--bg-base);
+  }
+
+  .settings-menu {
+    min-width: 280px;
+    padding: 8px 0;
+  }
+
+  .menu-section {
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--border-color);
+  }
+
+  .menu-section:last-child {
+    border-bottom: none;
+  }
+
+  .menu-header {
+    font-size: 11px;
+    text-transform: uppercase;
+    color: var(--text-secondary);
+    margin-bottom: 8px;
+  }
+
+  .menu-empty {
+    color: var(--text-secondary);
+    font-style: italic;
+    font-size: 13px;
+    margin-bottom: 8px;
+  }
+
+  .menu-info {
+    color: var(--text-secondary);
+    font-size: 13px;
+  }
+
+  .menu-btn {
+    display: block;
+    width: 100%;
+    padding: 6px 10px;
+    margin-top: 6px;
+    background: var(--bg-base);
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    color: var(--text-primary);
+    cursor: pointer;
+    font-size: 13px;
+  }
+
+  .menu-btn:hover:not(:disabled) {
+    background: var(--bg-hover);
+  }
+
+  .menu-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  .dir-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 0;
+  }
+
+  .dir-path {
+    flex: 1;
+    font-size: 12px;
+    font-family: monospace;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .dir-remove {
+    background: none;
+    border: none;
+    color: var(--text-secondary);
+    cursor: pointer;
+    font-size: 16px;
+    padding: 0 4px;
+  }
+
+  .dir-remove:hover {
+    color: #ff6b6b;
+  }
+
+  .grid-container {
+    flex: 1;
+    overflow-y: auto;
+    overflow-x: hidden;
+  }
+
+  .empty-state {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 100%;
+    color: var(--text-secondary);
+  }
+
+  .image-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+    gap: 2px;
+  }
+
+  .image-cell {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 4px;
+    cursor: pointer;
+  }
+
+  .image-cell:hover {
+    background: var(--bg-hover);
+  }
+
+  .thumbnail {
+    width: 100%;
+    aspect-ratio: 1;
+    object-fit: cover;
+    border-radius: 2px;
   }
 
   .thumbnail-placeholder {
-    background: #444;
-    color: #999;
+    width: 100%;
+    aspect-ratio: 1;
+    background: var(--bg-toolbar);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-secondary);
+    border-radius: 2px;
   }
 
-  .thumbnail-error {
-    background: #5c2a2a;
-    color: #ffcdd2;
+  .filename {
+    display: block;
+    width: 100%;
+    margin-top: 4px;
+    font-size: 11px;
+    color: var(--text-secondary);
+    text-align: center;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
-  .meta {
-    color: #999;
+  .context-menu {
+    position: fixed;
+    background: var(--bg-toolbar);
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    min-width: 140px;
+    z-index: 200;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+    padding: 4px 0;
   }
-}
+
+  .context-item {
+    display: block;
+    width: 100%;
+    padding: 8px 12px;
+    background: none;
+    border: none;
+    color: var(--text-primary);
+    text-align: left;
+    cursor: pointer;
+    font-size: 13px;
+  }
+
+  .context-item:hover:not(:disabled) {
+    background: var(--bg-hover);
+  }
+
+  .context-item.disabled {
+    color: var(--text-secondary);
+    cursor: not-allowed;
+  }
 </style>
