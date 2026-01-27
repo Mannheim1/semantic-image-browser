@@ -290,8 +290,8 @@
   .toolbar {
     display: flex;
     align-items: center;
-    gap: 8px;
-    padding: 8px;
+    gap: 4px;
+    padding: 6px;
     background: var(--bg-toolbar);
     border-bottom: 1px solid var(--border-color);
     flex-shrink: 0;
