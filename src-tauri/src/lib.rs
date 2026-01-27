@@ -1,3 +1,4 @@
+use lancedb::{Connection, Table};
 use ort::session::Session;
 use serde::Serialize;
 use std::collections::HashSet;
@@ -12,6 +13,11 @@ mod thumbnail;
 
 use config::AppConfig;
 use database::{ImageInfo, ImageRecord};
+
+pub struct AppState {
+    pub db: Connection,
+    pub table: tokio::sync::Mutex<Table>,
+}
 
 fn thumbnails_dir(app: &AppHandle, _config: &AppConfig) -> Result<PathBuf, String> {
     let app_data = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
@@ -54,7 +60,7 @@ async fn get_config(app: AppHandle) -> Result<AppConfig, String> {
 }
 
 #[tauri::command]
-async fn add_watched_directory(app: AppHandle, path: String) -> Result<ScanResult, String> {
+async fn add_watched_directory(app: AppHandle, state: tauri::State<'_, AppState>, path: String) -> Result<ScanResult, String> {
     validate_directory(&path)?;
     let mut cfg = config::load_config(&app)?;
 
@@ -63,20 +69,22 @@ async fn add_watched_directory(app: AppHandle, path: String) -> Result<ScanResul
         config::save_config(&app, &cfg)?;
     }
 
-    scan_directory_impl(&app, &cfg, &path).await
+    let thumb_dir = thumbnails_dir(&app, &cfg)?;
+    let table = state.table.lock().await;
+    let (result, _) = scan_directory_internal(&table, &thumb_dir, &path).await?;
+    Ok(result)
 }
 
 #[tauri::command]
-async fn remove_watched_directory(app: AppHandle, path: String) -> Result<(), String> {
+async fn remove_watched_directory(app: AppHandle, state: tauri::State<'_, AppState>, path: String) -> Result<(), String> {
     let mut cfg = config::load_config(&app)?;
     cfg.watched_directories.retain(|p| p != &path);
     config::save_config(&app, &cfg)?;
 
     let thumb_dir = thumbnails_dir(&app, &cfg)?;
-    let db = database::open_connection(&app, &cfg).await?;
-    let table = database::get_or_create_table(&db).await?;
 
     let removed_path = Path::new(&path);
+    let table = state.table.lock().await;
     let all_paths = database::get_all_paths(&table).await?;
     let to_remove: Vec<String> = all_paths
         .into_iter()
@@ -84,7 +92,6 @@ async fn remove_watched_directory(app: AppHandle, path: String) -> Result<(), St
         .collect();
 
     if !to_remove.is_empty() {
-        // Delete thumbnails for removed images
         thumbnail::delete_thumbnails(&thumb_dir, &to_remove)?;
         database::remove_images(&table, &to_remove).await?;
     }
@@ -93,7 +100,7 @@ async fn remove_watched_directory(app: AppHandle, path: String) -> Result<(), St
 }
 
 #[tauri::command]
-async fn rescan_all(app: AppHandle) -> Result<ScanResult, String> {
+async fn rescan_all(app: AppHandle, state: tauri::State<'_, AppState>) -> Result<ScanResult, String> {
     let cfg = config::load_config(&app)?;
     let thumb_dir = thumbnails_dir(&app, &cfg)?;
 
@@ -105,9 +112,7 @@ async fn rescan_all(app: AppHandle) -> Result<ScanResult, String> {
         errors: Vec::new(),
     };
 
-    let db = database::open_connection(&app, &cfg).await?;
-    let table = database::get_or_create_table(&db).await?;
-
+    let table = state.table.lock().await;
     let mut all_seen_paths: HashSet<String> = HashSet::new();
 
     for dir in &cfg.watched_directories {
@@ -133,7 +138,6 @@ async fn rescan_all(app: AppHandle) -> Result<ScanResult, String> {
 
     if !to_remove.is_empty() {
         total_result.images_removed = to_remove.len() as u32;
-        // Delete thumbnails for removed images
         thumbnail::delete_thumbnails(&thumb_dir, &to_remove)?;
         database::remove_images(&table, &to_remove).await?;
     }
@@ -146,7 +150,6 @@ async fn get_thumbnail_path(app: AppHandle, image_path: String) -> Result<String
     let cfg = config::load_config(&app)?;
     let thumb_dir = thumbnails_dir(&app, &cfg)?;
 
-    // Run on blocking thread pool since image decoding is CPU-intensive
     tokio::task::spawn_blocking(move || {
         let source = Path::new(&image_path);
         thumbnail::get_thumbnail_path_for_asset(&thumb_dir, source)
@@ -162,28 +165,21 @@ async fn get_watched_directories(app: AppHandle) -> Result<Vec<String>, String> 
 }
 
 #[tauri::command]
-async fn get_indexed_count(app: AppHandle) -> Result<u32, String> {
-    let cfg = config::load_config(&app)?;
-    let db = database::open_connection(&app, &cfg).await?;
-    let table = database::get_or_create_table(&db).await?;
+async fn get_indexed_count(state: tauri::State<'_, AppState>) -> Result<u32, String> {
+    let table = state.table.lock().await;
     let paths = database::get_all_paths(&table).await?;
     Ok(paths.len() as u32)
 }
 
 #[tauri::command]
-async fn get_all_images(app: AppHandle) -> Result<Vec<ImageInfo>, String> {
-    let cfg = config::load_config(&app)?;
-    let db = database::open_connection(&app, &cfg).await?;
-    let table = database::get_or_create_table(&db).await?;
+async fn get_all_images(state: tauri::State<'_, AppState>) -> Result<Vec<ImageInfo>, String> {
+    let table = state.table.lock().await;
     database::get_all_images(&table).await
 }
 
 #[tauri::command]
-async fn search_images(app: AppHandle, query: String) -> Result<Vec<ImageInfo>, String> {
-    let cfg = config::load_config(&app)?;
-    let db = database::open_connection(&app, &cfg).await?;
-    let table = database::get_or_create_table(&db).await?;
-
+async fn search_images(state: tauri::State<'_, AppState>, query: String) -> Result<Vec<ImageInfo>, String> {
+    let table = state.table.lock().await;
     if query.trim().is_empty() {
         database::get_all_images(&table).await
     } else {
@@ -218,13 +214,18 @@ async fn delete_all_thumbnails(app: AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn clear_database(app: AppHandle) -> Result<(), String> {
+async fn clear_database(app: AppHandle, state: tauri::State<'_, AppState>) -> Result<(), String> {
     let cfg = config::load_config(&app)?;
     let db_path = database::db_path(&app, &cfg)?;
+
+    let mut table = state.table.lock().await;
 
     if db_path.exists() {
         std::fs::remove_dir_all(&db_path).map_err(|e| e.to_string())?;
     }
+
+    // Recreate the table so the shared state remains valid
+    *table = database::get_or_create_table(&state.db).await?;
 
     Ok(())
 }
@@ -241,19 +242,6 @@ async fn open_app_data_folder(app: AppHandle) -> Result<(), String> {
     app.opener()
         .reveal_item_in_dir(&app_data)
         .map_err(|e| e.to_string())
-}
-
-async fn scan_directory_impl(
-    app: &AppHandle,
-    cfg: &AppConfig,
-    dir: &str,
-) -> Result<ScanResult, String> {
-    let db = database::open_connection(app, cfg).await?;
-    let table = database::get_or_create_table(&db).await?;
-    let thumb_dir = thumbnails_dir(app, cfg)?;
-
-    let (result, _) = scan_directory_internal(&table, &thumb_dir, dir).await?;
-    Ok(result)
 }
 
 async fn scan_directory_internal(
@@ -376,6 +364,18 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_dialog::init())
+        .setup(|app| {
+            let handle = app.handle().clone();
+            tauri::async_runtime::block_on(async {
+                let cfg = config::load_config(&handle)?;
+                let db = database::open_connection(&handle, &cfg).await?;
+                let table = database::get_or_create_table(&db).await?;
+                handle.manage(AppState { db, table: tokio::sync::Mutex::new(table) });
+                Ok::<(), String>(())
+            })
+            .expect("Failed to initialize database");
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             test_onnx,
             get_config,
