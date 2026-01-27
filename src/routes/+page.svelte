@@ -113,6 +113,22 @@
     await invoke("show_in_folder", { path });
   }
 
+  async function deleteAllThumbnails() {
+    await invoke("delete_all_thumbnails");
+    thumbnails = {};
+    await loadInitialData();
+  }
+
+  async function clearDatabase() {
+    await invoke("clear_database");
+    thumbnails = {};
+    await loadInitialData();
+  }
+
+  async function openAppDataFolder() {
+    await invoke("open_app_data_folder");
+  }
+
   function handleImageDblClick(img: ImageInfo) {
     openImage(img.path);
   }
@@ -202,6 +218,9 @@
             <div class="menu-section">
               <div class="menu-header">Debug</div>
               <div class="menu-info">Indexed: {indexedCount} images</div>
+              <button class="menu-btn" onclick={openAppDataFolder}>Open App Data Folder</button>
+              <button class="menu-btn" onclick={deleteAllThumbnails}>Delete All Thumbnails</button>
+              <button class="menu-btn" onclick={clearDatabase}>Clear Database</button>
             </div>
           </div>
         {/if}
