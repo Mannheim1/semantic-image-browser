@@ -205,6 +205,44 @@ async fn show_in_folder(app: AppHandle, path: String) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+async fn delete_all_thumbnails(app: AppHandle) -> Result<(), String> {
+    let cfg = config::load_config(&app)?;
+    let thumb_dir = thumbnails_dir(&app, &cfg)?;
+
+    if thumb_dir.exists() {
+        std::fs::remove_dir_all(&thumb_dir).map_err(|e| e.to_string())?;
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+async fn clear_database(app: AppHandle) -> Result<(), String> {
+    let cfg = config::load_config(&app)?;
+    let db_path = database::db_path(&app, &cfg)?;
+
+    if db_path.exists() {
+        std::fs::remove_dir_all(&db_path).map_err(|e| e.to_string())?;
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+async fn open_app_data_folder(app: AppHandle) -> Result<(), String> {
+    let app_data = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
+
+    // Create the directory if it doesn't exist
+    if !app_data.exists() {
+        std::fs::create_dir_all(&app_data).map_err(|e| e.to_string())?;
+    }
+
+    app.opener()
+        .reveal_item_in_dir(&app_data)
+        .map_err(|e| e.to_string())
+}
+
 async fn scan_directory_impl(
     app: &AppHandle,
     cfg: &AppConfig,
@@ -350,7 +388,10 @@ pub fn run() {
             get_all_images,
             search_images,
             open_image,
-            show_in_folder
+            show_in_folder,
+            delete_all_thumbnails,
+            clear_database,
+            open_app_data_folder
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
