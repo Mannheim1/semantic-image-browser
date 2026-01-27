@@ -265,6 +265,8 @@ async fn scan_directory_internal(
         errors: Vec::new(),
     };
 
+    let db_modified_times = database::get_all_modified_times(table).await?;
+
     let mut seen_paths: HashSet<String> = HashSet::new();
     let mut to_upsert: Vec<ImageRecord> = Vec::new();
     let mut paths_needing_thumbnails: Vec<String> = Vec::new();
@@ -274,9 +276,8 @@ async fn scan_directory_internal(
 
         let file_modified_ms = scanner::system_time_to_millis(file.modified_at);
 
-        let needs_update = match database::get_image_by_path(table, &file.path).await {
-            Ok(Some(db_modified)) => {
-                // File exists in DB, check if it was modified
+        let needs_update = match db_modified_times.get(&file.path) {
+            Some(&db_modified) => {
                 if db_modified < file_modified_ms {
                     result.images_updated += 1;
                     true
@@ -284,23 +285,9 @@ async fn scan_directory_internal(
                     false
                 }
             }
-            Ok(None) => {
-                // File not in DB - add it
+            None => {
                 result.images_added += 1;
                 true
-            }
-            Err(e) if e.contains("null byte") => {
-                // Path validation error - skip this specific file
-                result.errors.push(format!("Invalid path '{}': {}", file.path, e));
-                continue;
-            }
-            Err(e) => {
-                // Database infrastructure error - fail entire scan to prevent data loss
-                return Err(format!(
-                    "Database error while checking '{}': {}. Scan aborted to prevent data loss. \
-                    This usually indicates a database connection problem or corruption.",
-                    file.path, e
-                ));
             }
         };
 

@@ -20,6 +20,7 @@ use arrow_array::{
     Array, ArrayRef, RecordBatch, RecordBatchIterator, StringArray,
     TimestampMillisecondArray, UInt64Array,
 };
+use std::collections::HashMap;
 use arrow_schema::{DataType, Field, Schema, TimeUnit};
 use futures::TryStreamExt;
 use lancedb::query::{ExecutableQuery, QueryBase};
@@ -230,12 +231,12 @@ pub async fn get_all_paths(table: &Table) -> Result<Vec<String>, String> {
     Ok(paths)
 }
 
-pub async fn get_image_by_path(table: &Table, path: &str) -> Result<Option<i64>, String> {
-    let escaped = escape_sql_string(path)?;
+/// Returns a map of path -> modified_at for all images in the table.
+pub async fn get_all_modified_times(table: &Table) -> Result<HashMap<String, i64>, String> {
     let batches: Vec<RecordBatch> = table
         .query()
-        .only_if(format!("path = '{}'", escaped))
         .select(lancedb::query::Select::Columns(vec![
+            "path".to_string(),
             "modified_at".to_string(),
         ]))
         .execute()
@@ -245,23 +246,29 @@ pub async fn get_image_by_path(table: &Table, path: &str) -> Result<Option<i64>,
         .await
         .map_err(|e: lancedb::Error| e.to_string())?;
 
-    if batches.is_empty() {
-        return Ok(None);
+    let mut map = HashMap::new();
+    for batch in batches {
+        let path_col = batch
+            .column_by_name("path")
+            .ok_or("path column not found")?
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .ok_or("path column is not a string array")?;
+        let modified_col = batch
+            .column_by_name("modified_at")
+            .ok_or("modified_at column not found")?
+            .as_any()
+            .downcast_ref::<TimestampMillisecondArray>()
+            .ok_or("modified_at column is not a timestamp array")?;
+
+        for i in 0..path_col.len() {
+            if !path_col.is_null(i) {
+                map.insert(path_col.value(i).to_string(), modified_col.value(i));
+            }
+        }
     }
 
-    let batch = &batches[0];
-    if batch.num_rows() == 0 {
-        return Ok(None);
-    }
-
-    let modified_col = batch
-        .column_by_name("modified_at")
-        .ok_or("modified_at column not found")?
-        .as_any()
-        .downcast_ref::<TimestampMillisecondArray>()
-        .ok_or("modified_at column is not a timestamp array")?;
-
-    Ok(Some(modified_col.value(0)))
+    Ok(map)
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
