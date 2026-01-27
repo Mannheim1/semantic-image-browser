@@ -299,13 +299,15 @@
 
   .search-input {
     flex: 1;
-    padding: 8px 12px;
+    height: 34px;
+    padding: 0 12px;
     background: var(--bg-base);
     border: 1px solid var(--border-color);
     border-radius: 4px;
     color: var(--text-primary);
     font-size: 14px;
     outline: none;
+    box-sizing: border-box;
   }
 
   .search-input:focus {
@@ -322,13 +324,15 @@
   }
 
   .toolbar-btn {
-    padding: 8px 12px;
+    height: 34px;
+    padding: 0 12px;
     background: var(--bg-base);
     border: 1px solid var(--border-color);
     border-radius: 4px;
     color: var(--text-primary);
     cursor: pointer;
     font-size: 13px;
+    box-sizing: border-box;
   }
 
   .toolbar-btn:hover {
@@ -337,7 +341,8 @@
 
   .gear-btn {
     font-size: 16px;
-    padding: 8px 10px;
+    width: 34px;
+    padding: 0;
   }
 
   .dropdown {
