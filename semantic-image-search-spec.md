@@ -14,6 +14,23 @@ Search bar, thumbnail grid, context menus (with placeholder filename search).
 ### Phase 4: Visual Embedding Search
 CLIP/SigLIP model integration for image-to-vector and text-to-vector.
 
+#### Phase 4 Export Plan (SigLIP2 NaFlex)
+SigLIP2 is a dual-encoder: a vision tower and a text tower that must come from the same checkpoint. For ONNX, we will use two separate models (`vision_model.onnx` and `text_model.onnx`) that produce embeddings in the same vector space.
+
+**Goal:** obtain matching ONNX models for both towers and bundle them with the app.
+
+**Preferred path:**
+Export from the local `model.safetensors` checkpoint at `C:\Dev\test\siglip2-base-patch16-naflex\model.safetensors` using a model-aware exporter.
+
+**Non-goals:** running safetensors directly in the app (requires a heavy runtime).
+
+**Packaging decision:** bundle the ONNX models and tokenizer/config files as Tauri resources and copy to app data on first run.
+
+**Validation steps:**
+- Inspect ONNX inputs/outputs to confirm the text model accepts `input_ids`/`attention_mask` and the vision model accepts `pixel_values`/`pixel_attention_mask`/`spatial_shapes`.
+- Confirm both models output the same embedding dimension (expected 768 for SigLIP2 Base).
+- Run a smoke test: encode a sample image and a matching text prompt, verify cosine similarity is higher than an unrelated prompt.
+
 ### Phase 5: OCR Pipeline
 Tesseract integration, text extraction, storage.
 
