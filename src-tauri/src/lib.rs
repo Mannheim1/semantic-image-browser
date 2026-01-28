@@ -48,10 +48,98 @@ pub struct ScanResult {
     pub errors: Vec<String>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct OnnxIoInfo {
+    pub name: String,
+    pub dtype: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct OnnxModelInfo {
+    pub inputs: Vec<OnnxIoInfo>,
+    pub outputs: Vec<OnnxIoInfo>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SiglipConfigInfo {
+    pub has_text: bool,
+    pub has_vision: bool,
+    pub text_hidden_size: Option<i64>,
+    pub vision_hidden_size: Option<i64>,
+}
+
 #[tauri::command]
 fn test_onnx() -> Result<String, String> {
     let _builder = Session::builder().map_err(|e| e.to_string())?;
     Ok("ONNX Runtime initialized successfully!".to_string())
+}
+
+#[tauri::command]
+fn inspect_onnx_model(path: String) -> Result<OnnxModelInfo, String> {
+    let model_path = PathBuf::from(&path);
+    let model_dir = model_path
+        .parent()
+        .ok_or("Model path has no parent directory")?;
+    let external_data_path = model_path.with_extension("onnx_data");
+    if !external_data_path.exists() {
+        return Err(format!(
+            "Missing external data file: {}",
+            external_data_path.display()
+        ));
+    }
+
+    let previous_dir = std::env::current_dir().map_err(|e| e.to_string())?;
+    std::env::set_current_dir(model_dir).map_err(|e| e.to_string())?;
+
+    let model_bytes = std::fs::read(&model_path).map_err(|e| e.to_string())?;
+    let session = Session::builder()
+        .map_err(|e| e.to_string())?
+        .commit_from_memory(&model_bytes)
+        .map_err(|e| e.to_string())?;
+
+    let mut inputs = Vec::new();
+    for input in session.inputs().iter() {
+        inputs.push(OnnxIoInfo {
+            name: input.name().to_string(),
+            dtype: format!("{}", input.dtype()),
+        });
+    }
+
+    let mut outputs = Vec::new();
+    for output in session.outputs().iter() {
+        outputs.push(OnnxIoInfo {
+            name: output.name().to_string(),
+            dtype: format!("{}", output.dtype()),
+        });
+    }
+
+    std::env::set_current_dir(previous_dir).map_err(|e| e.to_string())?;
+
+    Ok(OnnxModelInfo { inputs, outputs })
+}
+
+#[tauri::command]
+fn inspect_siglip_config(path: String) -> Result<SiglipConfigInfo, String> {
+    let content = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+    let json: serde_json::Value = serde_json::from_str(&content).map_err(|e| e.to_string())?;
+
+    let text_config = json.get("text_config");
+    let vision_config = json.get("vision_config");
+
+    let text_hidden_size = text_config
+        .and_then(|v| v.get("hidden_size"))
+        .and_then(|v| v.as_i64());
+
+    let vision_hidden_size = vision_config
+        .and_then(|v| v.get("hidden_size"))
+        .and_then(|v| v.as_i64());
+
+    Ok(SiglipConfigInfo {
+        has_text: text_config.is_some(),
+        has_vision: vision_config.is_some(),
+        text_hidden_size,
+        vision_hidden_size,
+    })
 }
 
 #[tauri::command]
@@ -365,6 +453,8 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             test_onnx,
+            inspect_onnx_model,
+            inspect_siglip_config,
             get_config,
             add_watched_directory,
             remove_watched_directory,

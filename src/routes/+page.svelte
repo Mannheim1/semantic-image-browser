@@ -19,12 +19,33 @@
     modified_at: number;
   }
 
+  interface OnnxIoInfo {
+    name: string;
+    dtype: string;
+  }
+
+  interface OnnxModelInfo {
+    inputs: OnnxIoInfo[];
+    outputs: OnnxIoInfo[];
+  }
+
+  interface SiglipConfigInfo {
+    has_text: boolean;
+    has_vision: boolean;
+    text_hidden_size: number | null;
+    vision_hidden_size: number | null;
+  }
+
   let searchQuery = $state("");
   let images = $state<ImageInfo[]>([]);
   let thumbnails = $state<Record<string, string | null>>({});
   let isLoading = $state(false);
   let watchedDirectories = $state<string[]>([]);
   let indexedCount = $state(0);
+  let onnxInfo = $state<OnnxModelInfo | null>(null);
+  let onnxError = $state("");
+  let siglipInfo = $state<SiglipConfigInfo | null>(null);
+  let siglipError = $state("");
 
   // Settings menu state
   let showSettingsMenu = $state(false);
@@ -129,6 +150,48 @@
     await invoke("open_app_data_folder");
   }
 
+  async function inspectOnnxModel() {
+    const selected = await open({
+      directory: false,
+      multiple: false,
+      title: "Select ONNX model",
+      filters: [{ name: "ONNX", extensions: ["onnx"] }]
+    });
+
+    if (!selected || Array.isArray(selected)) {
+      return;
+    }
+
+    try {
+      onnxInfo = await invoke("inspect_onnx_model", { path: selected });
+      onnxError = "";
+    } catch (e) {
+      onnxInfo = null;
+      onnxError = String(e);
+    }
+  }
+
+  async function inspectSiglipConfig() {
+    const selected = await open({
+      directory: false,
+      multiple: false,
+      title: "Select SigLIP config.json",
+      filters: [{ name: "Config", extensions: ["json"] }]
+    });
+
+    if (!selected || Array.isArray(selected)) {
+      return;
+    }
+
+    try {
+      siglipInfo = await invoke("inspect_siglip_config", { path: selected });
+      siglipError = "";
+    } catch (e) {
+      siglipInfo = null;
+      siglipError = String(e);
+    }
+  }
+
   function handleImageDblClick(img: ImageInfo) {
     openImage(img.path);
   }
@@ -221,6 +284,31 @@
               <button class="menu-btn" onclick={openAppDataFolder}>Open App Data Folder</button>
               <button class="menu-btn" onclick={deleteAllThumbnails}>Delete All Thumbnails</button>
               <button class="menu-btn" onclick={clearDatabase}>Clear Database</button>
+              <button class="menu-btn" onclick={inspectOnnxModel}>Inspect ONNX Model</button>
+              <button class="menu-btn" onclick={inspectSiglipConfig}>Inspect SigLIP Config</button>
+              {#if onnxError}
+                <div class="menu-info">ONNX error: {onnxError}</div>
+              {/if}
+              {#if onnxInfo}
+                <div class="menu-info">Inputs:</div>
+                {#each onnxInfo.inputs as input}
+                  <div class="menu-info">{input.name} - {input.dtype}</div>
+                {/each}
+                <div class="menu-info">Outputs:</div>
+                {#each onnxInfo.outputs as output}
+                  <div class="menu-info">{output.name} - {output.dtype}</div>
+                {/each}
+              {/if}
+              {#if siglipError}
+                <div class="menu-info">SigLIP error: {siglipError}</div>
+              {/if}
+              {#if siglipInfo}
+                <div class="menu-info">SigLIP config:</div>
+                <div class="menu-info">Text tower: {siglipInfo.has_text ? "yes" : "no"}</div>
+                <div class="menu-info">Vision tower: {siglipInfo.has_vision ? "yes" : "no"}</div>
+                <div class="menu-info">Text hidden size: {siglipInfo.text_hidden_size ?? "n/a"}</div>
+                <div class="menu-info">Vision hidden size: {siglipInfo.vision_hidden_size ?? "n/a"}</div>
+              {/if}
             </div>
           </div>
         {/if}
