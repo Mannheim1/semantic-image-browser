@@ -36,4 +36,6 @@ base64 = "0.22"
 sha2 = "0.10"
 hex = "0.4"
 webp = "0.3"
+ndarray = "0.17.2"
+tokenizers = "0.22.2"
 
