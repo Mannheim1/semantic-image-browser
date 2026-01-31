@@ -32,7 +32,7 @@ use tauri::{AppHandle, Manager};
 use crate::config::AppConfig;
 
 pub const TABLE_NAME: &str = "images";
-pub const VISUAL_EMBEDDING_DIM: i32 = 512;
+pub const VISUAL_EMBEDDING_DIM: i32 = 768; // SigLIP2-base pooler_output dimension
 pub const OCR_EMBEDDING_DIM: i32 = 384;
 
 /// Escapes a string value for safe use in LanceDB SQL predicates.
