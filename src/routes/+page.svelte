@@ -71,6 +71,9 @@
   let isPanelOpen = $state(false);
   let selectedIndex = $state<number | null>(null);
   let selectedImage = $state<ImageInfo | null>(null);
+  let panelWidthPct = $state<number | null>(null);
+  let isResizingPanel = $state(false);
+  let resultsRowEl: HTMLDivElement | null = null;
 
   // ONNX Runtime state
   let ortStatus = $state<OrtStatus | null>(null);
@@ -353,6 +356,9 @@
 
   function openPanelAtIndex(index: number) {
     if (index < 0 || index >= images.length) return;
+    if (panelWidthPct === null) {
+      panelWidthPct = 50;
+    }
     selectedIndex = index;
     selectedImage = images[index];
     isPanelOpen = true;
@@ -362,6 +368,7 @@
     isPanelOpen = false;
     selectedIndex = null;
     selectedImage = null;
+    isResizingPanel = false;
   }
 
   function handleImageClick(index: number) {
@@ -382,6 +389,26 @@
       e.preventDefault();
       openPanelAtIndex(Math.max(selectedIndex - 1, 0));
     }
+  }
+
+  function handlePanelResizeStart(e: MouseEvent) {
+    if (!isPanelOpen) return;
+    e.preventDefault();
+    isResizingPanel = true;
+  }
+
+  function handleWindowMouseMove(e: MouseEvent) {
+    if (!isResizingPanel || !resultsRowEl) return;
+    const rect = resultsRowEl.getBoundingClientRect();
+    const clampedX = Math.max(rect.left, Math.min(e.clientX, rect.right));
+    const panelWidth = rect.right - clampedX;
+    const pct = (panelWidth / rect.width) * 100;
+    panelWidthPct = Math.max(20, Math.min(80, pct));
+  }
+
+  function handleWindowMouseUp() {
+    if (!isResizingPanel) return;
+    isResizingPanel = false;
   }
 
   function handleWindowClick() {
@@ -441,7 +468,12 @@
   });
 </script>
 
-<svelte:window onclick={handleWindowClick} onkeydown={handleKeyDown} />
+<svelte:window
+  onclick={handleWindowClick}
+  onkeydown={handleKeyDown}
+  onmousemove={handleWindowMouseMove}
+  onmouseup={handleWindowMouseUp}
+/>
 
 <div class="app">
   <header class="toolbar">
@@ -556,8 +588,13 @@
     </div>
   </header>
 
-  <div class="results-row">
-    <main class="grid-container">
+  <div class="results-row" bind:this={resultsRowEl}>
+    <main
+      class="grid-container"
+      class:panel-open={isPanelOpen}
+      class:panel-closed={!isPanelOpen}
+      style={isPanelOpen ? `width: ${100 - (panelWidthPct ?? 50)}%` : undefined}
+    >
       {#if images.length === 0 && !isLoading}
         <div class="empty-state">
           {#if watchedDirectories.length === 0}
@@ -591,7 +628,8 @@
     </main>
 
     {#if isPanelOpen && selectedImage}
-      <aside class="image-panel">
+      <div class="panel-resizer" onmousedown={handlePanelResizeStart}></div>
+      <aside class="image-panel" style="width: {panelWidthPct ?? 50}%;">
         <div class="panel-header">
           <div class="panel-title" title={selectedImage.path}>{getFilename(selectedImage.path)}</div>
           <button class="panel-close" onclick={closePanel}>X</button>
@@ -1041,9 +1079,17 @@
   }
 
   .grid-container {
-    flex: 1;
     overflow-y: auto;
     overflow-x: hidden;
+  }
+
+  .grid-container.panel-closed {
+    flex: 1 1 auto;
+    width: 100%;
+  }
+
+  .grid-container.panel-open {
+    flex: 0 0 auto;
   }
 
   .results-row {
@@ -1147,12 +1193,26 @@
   }
 
   .image-panel {
-    flex: 1;
+    flex: 0 0 auto;
     display: flex;
     flex-direction: column;
     background: var(--bg-toolbar);
     border-left: 1px solid var(--border-color);
     min-width: 0;
+  }
+
+  .panel-resizer {
+    width: 6px;
+    cursor: ew-resize;
+    background: var(--bg-toolbar);
+    border-left: 1px solid var(--border-color);
+    border-right: 1px solid var(--border-color);
+    align-self: stretch;
+    z-index: 1;
+  }
+
+  .panel-resizer:hover {
+    background: var(--bg-hover);
   }
 
   .panel-header {
