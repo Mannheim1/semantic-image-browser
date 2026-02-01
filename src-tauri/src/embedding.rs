@@ -24,9 +24,18 @@ static ORT_INIT_RESULT: OnceLock<Result<(), String>> = OnceLock::new();
 /// This must be called before creating any sessions when using load-dynamic.
 /// Safe to call multiple times - only the first call has effect.
 /// Subsequent calls return the same result as the first call.
+///
+/// On Windows, this also adds the library's parent directory to the DLL search path
+/// so that CUDA dependencies (cuBLAS, cuDNN) are found when loading the GPU provider.
 pub fn init_ort(dylib_path: &Path) -> Result<(), String> {
     ORT_INIT_RESULT
         .get_or_init(|| {
+            // On Windows, add the library directory to DLL search path so CUDA deps are found
+            #[cfg(target_os = "windows")]
+            if let Some(lib_dir) = dylib_path.parent() {
+                add_dll_directory(lib_dir)?;
+            }
+
             match ort::init_from(dylib_path) {
                 Ok(builder) => {
                     builder.commit();
@@ -40,6 +49,31 @@ pub fn init_ort(dylib_path: &Path) -> Result<(), String> {
             }
         })
         .clone()
+}
+
+/// Add a directory to the Windows DLL search path.
+/// This ensures CUDA libraries bundled with the app are found before system-installed ones.
+#[cfg(target_os = "windows")]
+fn add_dll_directory(dir: &Path) -> Result<(), String> {
+    use std::os::windows::ffi::OsStrExt;
+
+    // Convert path to wide string for Windows API
+    let wide_path: Vec<u16> = dir.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
+
+    // SetDllDirectoryW adds a directory to the search path for LoadLibrary calls
+    // Returns non-zero on success
+    let result = unsafe { windows_sys::Win32::System::LibraryLoader::SetDllDirectoryW(wide_path.as_ptr()) };
+
+    if result == 0 {
+        Err(format!(
+            "Failed to set DLL directory to {}: Windows error {}",
+            dir.display(),
+            std::io::Error::last_os_error()
+        ))
+    } else {
+        println!("Added DLL search directory: {}", dir.display());
+        Ok(())
+    }
 }
 
 /// Image size expected by the SigLIP2 model (256x256 for siglip2-base-patch16-256)
