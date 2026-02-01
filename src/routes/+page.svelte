@@ -1,7 +1,9 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
   import { convertFileSrc } from "@tauri-apps/api/core";
+  import { listen } from "@tauri-apps/api/event";
   import { open } from "@tauri-apps/plugin-dialog";
+  import { onMount } from "svelte";
 
   interface ScanResult {
     images_found: number;
@@ -34,6 +36,11 @@
     error: string | null;
   }
 
+  interface ScanProgressPayload {
+    current: number;
+    total: number;
+  }
+
   let searchQuery = $state("");
   let images = $state<ImageInfo[]>([]);
   let thumbnails = $state<Record<string, string | null>>({});
@@ -46,6 +53,7 @@
   let embeddingTesting = $state(false);
   let embeddingModelLoaded = $state(false);
   let lastScanDurationMs = $state<number | null>(null);
+  let scanProgress = $state<ScanProgressPayload | null>(null);
 
   // Embedding test modal state
   let showEmbeddingModal = $state(false);
@@ -118,6 +126,7 @@
 
     if (selected) {
       isLoading = true;
+      scanProgress = { current: 0, total: 0 };
       const start = performance.now();
       await invoke("add_watched_directory", { path: selected });
       lastScanDurationMs = performance.now() - start;
@@ -133,6 +142,7 @@
 
   async function rescanAll() {
     isLoading = true;
+    scanProgress = { current: 0, total: 0 };
     const start = performance.now();
     await invoke("rescan_all");
     lastScanDurationMs = performance.now() - start;
@@ -259,6 +269,16 @@
     return path.split(/[\\/]/).pop() || path;
   }
 
+  function getScanningLabel(defaultLabel: string): string {
+    if (!isLoading) {
+      return defaultLabel;
+    }
+    if (scanProgress && scanProgress.total > 0) {
+      return `Scanning ${scanProgress.current}/${scanProgress.total} images...`;
+    }
+    return "Scanning...";
+  }
+
   function formatDuration(ms: number): string {
     if (ms < 1000) {
       return `${Math.round(ms)} ms`;
@@ -274,6 +294,16 @@
 
   $effect(() => {
     loadInitialData();
+  });
+
+  onMount(() => {
+    const unlistenPromise = listen<ScanProgressPayload>("scan_progress", (event) => {
+      scanProgress = event.payload;
+    });
+
+    return () => {
+      unlistenPromise.then((unlisten) => unlisten());
+    };
   });
 </script>
 
@@ -329,10 +359,10 @@
                 {/each}
               {/if}
               <button class="menu-btn" onclick={addDirectory} disabled={isLoading}>
-                {isLoading ? "Scanning..." : "Add Directory"}
+                {getScanningLabel("Add Directory")}
               </button>
               <button class="menu-btn" onclick={rescanAll} disabled={isLoading || watchedDirectories.length === 0}>
-                {isLoading ? "Scanning..." : "Rescan All"}
+                {getScanningLabel("Rescan All")}
               </button>
               {#if lastScanDurationMs !== null}
                 <div class="menu-info">Last scan: {formatDuration(lastScanDurationMs)}</div>

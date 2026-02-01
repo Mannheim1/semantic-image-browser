@@ -2,8 +2,10 @@ use lancedb::{Connection, Table};
 use serde::Serialize;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::sync::Mutex;
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_opener::OpenerExt;
 
 mod config;
@@ -125,6 +127,47 @@ pub struct EmbeddingTestResult {
     pub error: Option<String>,
 }
 
+#[derive(Clone, Serialize)]
+pub struct ScanProgressPayload {
+    pub current: u64,
+    pub total: u64,
+}
+
+#[derive(Clone)]
+pub struct ScanProgressState {
+    app: AppHandle,
+    total: Arc<AtomicUsize>,
+    current: Arc<AtomicUsize>,
+}
+
+impl ScanProgressState {
+    pub fn new(app: &AppHandle) -> Self {
+        Self {
+            app: app.clone(),
+            total: Arc::new(AtomicUsize::new(0)),
+            current: Arc::new(AtomicUsize::new(0)),
+        }
+    }
+
+    pub fn add_total(&self, count: usize) {
+        self.total.fetch_add(count, Ordering::SeqCst);
+        self.emit();
+    }
+
+    pub fn increment(&self) {
+        self.current.fetch_add(1, Ordering::SeqCst);
+        self.emit();
+    }
+
+    fn emit(&self) {
+        let current = self.current.load(Ordering::SeqCst) as u64;
+        let total = self.total.load(Ordering::SeqCst) as u64;
+        let _ = self.app.emit(
+            "scan_progress",
+            ScanProgressPayload { current, total },
+        );
+    }
+}
 
 #[tauri::command]
 fn inspect_siglip_config(path: String) -> Result<SiglipConfigInfo, String> {
@@ -255,12 +298,14 @@ async fn add_watched_directory(app: AppHandle, state: tauri::State<'_, AppState>
     let thumb_dir = thumbnails_dir(&app, &cfg)?;
     let table = state.table.lock().await;
 
+    let progress = ScanProgressState::new(&app);
     let (result, _) = scan_directory_internal(
         &table,
         &thumb_dir,
         &path,
         state.embedding_pool.as_ref(),
         state.model_id.as_deref(),
+        Some(progress),
     ).await?;
     Ok(result)
 }
@@ -293,6 +338,7 @@ async fn remove_watched_directory(app: AppHandle, state: tauri::State<'_, AppSta
 async fn rescan_all(app: AppHandle, state: tauri::State<'_, AppState>) -> Result<ScanResult, String> {
     let cfg = config::load_config(&app)?;
     let thumb_dir = thumbnails_dir(&app, &cfg)?;
+    let progress = ScanProgressState::new(&app);
 
     let mut total_result = ScanResult {
         images_found: 0,
@@ -312,6 +358,7 @@ async fn rescan_all(app: AppHandle, state: tauri::State<'_, AppState>) -> Result
             dir,
             state.embedding_pool.as_ref(),
             state.model_id.as_deref(),
+            Some(progress.clone()),
         ).await {
             Ok((result, seen_paths)) => {
                 total_result.images_found += result.images_found;
@@ -471,6 +518,7 @@ async fn scan_directory_internal(
     dir: &str,
     embedding_pool: Option<&EmbeddingPool>,
     model_id: Option<&str>,
+    progress: Option<ScanProgressState>,
 ) -> Result<(ScanResult, HashSet<String>), String> {
     let dir_path = Path::new(dir);
     let files = tokio::task::spawn_blocking({
@@ -519,6 +567,10 @@ async fn scan_directory_internal(
         }
     }
 
+    if let Some(progress) = &progress {
+        progress.add_total(paths_needing_processing.len());
+    }
+
     // Generate thumbnails and embeddings for new/updated images
     if !paths_needing_processing.is_empty() {
         let thumb_dir_clone = thumb_dir.to_path_buf();
@@ -526,6 +578,8 @@ async fn scan_directory_internal(
             .iter()
             .map(|(p, _)| p.clone())
             .collect();
+        let progress_for_thumbnails = progress.clone();
+        let use_thumbnail_progress = embedding_pool.is_none();
 
         // Generate thumbnails in parallel (existing logic)
         let thumbnail_errors = tokio::task::spawn_blocking(move || {
@@ -540,11 +594,17 @@ async fn scan_directory_internal(
                 for chunk in paths_for_thumbnails.chunks(chunk_size) {
                     let errors = &errors;
                     let thumb_dir = &thumb_dir_clone;
+                    let progress = progress_for_thumbnails.clone();
                     s.spawn(move || {
                         for path_str in chunk {
                             let source_path = Path::new(path_str);
                             if let Err(e) = thumbnail::ensure_thumbnail(thumb_dir, source_path) {
                                 errors.lock().unwrap().push(format!("Thumbnail error for {}: {}", path_str, e));
+                            }
+                            if use_thumbnail_progress {
+                                if let Some(progress) = &progress {
+                                    progress.increment();
+                                }
                             }
                         }
                     });
@@ -562,6 +622,7 @@ async fn scan_directory_internal(
             .iter()
             .map(|(p, _)| p.clone())
             .collect();
+        let progress_for_embeddings = progress.clone();
 
         // Generate embeddings using the pre-loaded model pool.
         // Each worker thread uses its own model instance from the pool,
@@ -580,6 +641,7 @@ async fn scan_directory_internal(
                         let results = &results;
                         let start = worker_idx * chunk_size;
                         let chunk = chunk.to_vec();
+                        let progress = progress_for_embeddings.clone();
 
                         // Each worker gets its own model from the pool
                         let model_mutex = match pool.get(worker_idx) {
@@ -612,6 +674,9 @@ async fn scan_directory_internal(
                                             .unwrap()
                                             .push(format!("Embedding error for {}: {}", path, e));
                                     }
+                                }
+                                if let Some(progress) = &progress {
+                                    progress.increment();
                                 }
                             }
                         });
