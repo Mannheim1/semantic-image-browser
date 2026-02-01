@@ -44,6 +44,7 @@
   let siglipError = $state("");
   let embeddingResult = $state<EmbeddingTestResult | null>(null);
   let embeddingTesting = $state(false);
+  let embeddingModelLoaded = $state(false);
 
   // Embedding test modal state
   let showEmbeddingModal = $state(false);
@@ -103,6 +104,7 @@
   async function loadInitialData() {
     watchedDirectories = await invoke("get_watched_directories");
     indexedCount = await invoke("get_indexed_count");
+    embeddingModelLoaded = await invoke("get_embedding_model_status");
     await search("");
   }
 
@@ -215,6 +217,20 @@
     embeddingTesting = false;
   }
 
+  async function saveModelConfig() {
+    const { ortDylibPath, modelDir } = embeddingInputs;
+    if (!ortDylibPath || !modelDir) {
+      alert("Both ONNX Runtime DLL path and Model Directory are required");
+      return;
+    }
+    try {
+      await invoke("set_model_config", { ortDylibPath, modelDir });
+      alert("Model configuration saved. Restart the app to load the model.");
+    } catch (e) {
+      alert("Failed to save config: " + String(e));
+    }
+  }
+
   function handleImageDblClick(img: ImageInfo) {
     openImage(img.path);
   }
@@ -304,6 +320,7 @@
             <div class="menu-section">
               <div class="menu-header">Debug</div>
               <div class="menu-info">Indexed: {indexedCount} images</div>
+              <div class="menu-info">Embedding model: {embeddingModelLoaded ? "✓ Loaded" : "✗ Not configured"}</div>
               <button class="menu-btn" onclick={openAppDataFolder}>Open App Data Folder</button>
               <button class="menu-btn" onclick={deleteAllThumbnails}>Delete All Thumbnails</button>
               <button class="menu-btn" onclick={clearDatabase}>Clear Database</button>
@@ -439,18 +456,26 @@
           </label>
         </div>
         <div class="modal-footer">
+          <div class="modal-result">
+            App model status: {embeddingModelLoaded ? "✓ Loaded" : "✗ Not loaded"}
+          </div>
           {#if embeddingResult}
             <div class="modal-result">
               {#if embeddingResult.error}
                 <span class="result-error">Error: {embeddingResult.error}</span>
               {:else}
-                <span>Model: ✓ | Image: {embeddingResult.image_embedding_dim}d | Text: {embeddingResult.text_embedding_dim}d | Similarity: {embeddingResult.similarity?.toFixed(4)}</span>
+                <span>Test: ✓ | Image: {embeddingResult.image_embedding_dim}d | Text: {embeddingResult.text_embedding_dim}d | Similarity: {embeddingResult.similarity?.toFixed(4)}</span>
               {/if}
             </div>
           {/if}
-          <button class="modal-btn" onclick={runEmbeddingTest} disabled={embeddingTesting}>
-            {embeddingTesting ? "Testing..." : "Run Test"}
-          </button>
+          <div class="modal-buttons">
+            <button class="modal-btn" onclick={runEmbeddingTest} disabled={embeddingTesting}>
+              {embeddingTesting ? "Testing..." : "Run Test"}
+            </button>
+            <button class="modal-btn" onclick={saveModelConfig}>
+              Save Config
+            </button>
+          </div>
         </div>
       </div>
     </div>
@@ -851,6 +876,11 @@
 
   .result-error {
     color: #ff6b6b;
+  }
+
+  .modal-buttons {
+    display: flex;
+    gap: 8px;
   }
 
   .modal-btn {
