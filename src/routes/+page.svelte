@@ -74,6 +74,7 @@
   let panelWidthPct = $state<number | null>(null);
   let isResizingPanel = $state(false);
   let resultsRowEl: HTMLDivElement | null = null;
+  let gridContainerEl: HTMLElement | null = null;
 
   // ONNX Runtime state
   let ortStatus = $state<OrtStatus | null>(null);
@@ -124,6 +125,7 @@
 
   async function search(query: string) {
     closePanel();
+    gridContainerEl?.scrollTo({ top: 0, behavior: "auto" });
     isLoading = true;
     try {
       images = await invoke("search_images", { query });
@@ -333,6 +335,7 @@
   async function findSimilar(img: ImageInfo) {
     isLoading = true;
     closePanel();
+    gridContainerEl?.scrollTo({ top: 0, behavior: "auto" });
     try {
       images = await invoke("search_similar_images", { imagePath: img.path });
       similarToImage = img;
@@ -594,6 +597,7 @@
       class:panel-open={isPanelOpen}
       class:panel-closed={!isPanelOpen}
       style={isPanelOpen ? `width: ${100 - (panelWidthPct ?? 50)}%` : undefined}
+      bind:this={gridContainerEl}
     >
       {#if images.length === 0 && !isLoading}
         <div class="empty-state">
