@@ -211,6 +211,7 @@ async fn add_watched_directory(app: AppHandle, state: tauri::State<'_, AppState>
         &path,
         state.embedding_model.as_ref(),
         model_id.as_deref(),
+        cfg.model_dir.as_deref(),
     ).await?;
     Ok(result)
 }
@@ -267,6 +268,7 @@ async fn rescan_all(app: AppHandle, state: tauri::State<'_, AppState>) -> Result
             dir,
             state.embedding_model.as_ref(),
             model_id.as_deref(),
+            cfg.model_dir.as_deref(),
         ).await {
             Ok((result, seen_paths)) => {
                 total_result.images_found += result.images_found;
@@ -432,6 +434,7 @@ async fn scan_directory_internal(
     dir: &str,
     embedding_model: Option<&Mutex<EmbeddingModel>>,
     model_id: Option<&str>,
+    model_dir: Option<&str>,
 ) -> Result<(ScanResult, HashSet<String>), String> {
     let dir_path = Path::new(dir);
     let files = tokio::task::spawn_blocking({
@@ -519,30 +522,80 @@ async fn scan_directory_internal(
 
         result.errors.extend(thumbnail_errors);
 
-        // Generate embeddings (sequential for now - model requires &mut self)
-        // Note: Embedding generation is slower than thumbnails, but we keep it simple.
-        // Future optimization: batch inference or use a separate thread with message passing.
+        let paths_for_embeddings: Vec<String> = paths_needing_processing
+            .iter()
+            .map(|(p, _)| p.clone())
+            .collect();
+
+        let (embeddings, embedding_errors): (Vec<Option<Vec<f32>>>, Vec<String>) =
+            if embedding_model.is_some() && model_dir.is_some() {
+                let model_dir = std::sync::Arc::new(PathBuf::from(model_dir.unwrap()));
+                tokio::task::spawn_blocking(move || {
+                    let num_threads = std::thread::available_parallelism()
+                        .map(|n| n.get())
+                        .unwrap_or(4);
+                    let chunk_size = (paths_for_embeddings.len() + num_threads - 1) / num_threads;
+
+                    let results = std::sync::Mutex::new(vec![None; paths_for_embeddings.len()]);
+                    let errors = std::sync::Mutex::new(Vec::new());
+
+                    std::thread::scope(|s| {
+                        for (chunk_idx, chunk) in paths_for_embeddings.chunks(chunk_size).enumerate() {
+                            let errors = &errors;
+                            let results = &results;
+                            let model_dir = model_dir.clone();
+                            let start = chunk_idx * chunk_size;
+                            let chunk = chunk.to_vec();
+
+                            s.spawn(move || {
+                                let mut model = match EmbeddingModel::load(&model_dir) {
+                                    Ok(m) => m,
+                                    Err(e) => {
+                                        errors.lock().unwrap().push(format!(
+                                            "Failed to load embedding model: {}",
+                                            e
+                                        ));
+                                        return;
+                                    }
+                                };
+
+                                for (offset, path) in chunk.iter().enumerate() {
+                                    let image_path = Path::new(path);
+                                    match model.embed_image(image_path) {
+                                        Ok(emb) => {
+                                            results.lock().unwrap()[start + offset] = Some(emb);
+                                        }
+                                        Err(e) => {
+                                            errors
+                                                .lock()
+                                                .unwrap()
+                                                .push(format!("Embedding error for {}: {}", path, e));
+                                        }
+                                    }
+                                }
+                            });
+                        }
+                    });
+
+                    let errors = errors.into_inner().unwrap();
+                    let results = results.into_inner().unwrap();
+                    Ok::<(Vec<Option<Vec<f32>>>, Vec<String>), String>((results, errors))
+                })
+                .await
+                .map_err(|e| e.to_string())??
+            } else {
+                (vec![None; paths_for_embeddings.len()], Vec::new())
+            };
+
+        result.errors.extend(embedding_errors);
+
+        let mut embedding_iter = embeddings.into_iter();
+
         for (path, file) in paths_needing_processing {
             let file_modified_ms = scanner::system_time_to_millis(file.modified_at);
 
-            let (embedding, emb_model_id) = if let Some(model) = embedding_model {
-                let image_path = Path::new(&path);
-                match model.lock() {
-                    Ok(mut m) => match m.embed_image(image_path) {
-                        Ok(emb) => (Some(emb), model_id.map(|s| s.to_string())),
-                        Err(e) => {
-                            result.errors.push(format!("Embedding error for {}: {}", path, e));
-                            (None, None)
-                        }
-                    },
-                    Err(e) => {
-                        result.errors.push(format!("Failed to lock embedding model: {}", e));
-                        (None, None)
-                    }
-                }
-            } else {
-                (None, None)
-            };
+            let embedding = embedding_iter.next().unwrap_or(None);
+            let emb_model_id = embedding.as_ref().and_then(|_| model_id.map(|s| s.to_string()));
 
             to_upsert.push(ImageRecord {
                 path,
