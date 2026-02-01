@@ -49,3 +49,7 @@ tmpclaude-*-cwd
 
 # Rust/Tauri
 src-tauri/target/
+
+# Editor/IDE config
+.claude/
+.vscode/
