@@ -6,7 +6,10 @@ use tauri::{AppHandle, Manager};
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AppConfig {
     pub watched_directories: Vec<String>,
-    /// Path to the ONNX Runtime DLL (onnxruntime.dll)
+    /// Runtime type: "cpu" or "gpu". Determines which ONNX Runtime to download/use.
+    pub runtime_type: Option<String>,
+    /// Override path to the ONNX Runtime library (for development).
+    /// If set, this takes precedence over the downloaded runtime.
     pub ort_dylib_path: Option<String>,
     /// Path to the SigLIP2 ONNX model directory
     pub model_dir: Option<String>,

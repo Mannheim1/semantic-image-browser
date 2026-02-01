@@ -38,4 +38,9 @@ hex = "0.4"
 webp = "0.3"
 ndarray = "0.17.2"
 tokenizers = "0.22.2"
+reqwest = { version = "0.12", features = ["stream"] }
+futures-util = "0.3"
+zip = "7.1"
+flate2 = "1.1"
+tar = "0.4"
 
