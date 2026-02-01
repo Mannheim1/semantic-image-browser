@@ -621,9 +621,6 @@
       style="left: {contextMenu.x}px; top: {contextMenu.y}px;"
       onclick={(e) => e.stopPropagation()}
     >
-      <button class="context-item" onclick={() => { openImage(contextMenu!.image.path); closeContextMenu(); }}>
-        Open
-      </button>
       <button class="context-item" onclick={() => { showInFolder(contextMenu!.image.path); closeContextMenu(); }}>
         Show in folder
       </button>
