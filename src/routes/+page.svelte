@@ -45,6 +45,7 @@
   let embeddingResult = $state<EmbeddingTestResult | null>(null);
   let embeddingTesting = $state(false);
   let embeddingModelLoaded = $state(false);
+  let lastScanDurationMs = $state<number | null>(null);
 
   // Embedding test modal state
   let showEmbeddingModal = $state(false);
@@ -117,7 +118,9 @@
 
     if (selected) {
       isLoading = true;
+      const start = performance.now();
       await invoke("add_watched_directory", { path: selected });
+      lastScanDurationMs = performance.now() - start;
       await loadInitialData();
       isLoading = false;
     }
@@ -130,7 +133,9 @@
 
   async function rescanAll() {
     isLoading = true;
+    const start = performance.now();
     await invoke("rescan_all");
+    lastScanDurationMs = performance.now() - start;
     await loadInitialData();
     isLoading = false;
   }
@@ -254,6 +259,19 @@
     return path.split(/[\\/]/).pop() || path;
   }
 
+  function formatDuration(ms: number): string {
+    if (ms < 1000) {
+      return `${Math.round(ms)} ms`;
+    }
+    const seconds = ms / 1000;
+    if (seconds < 60) {
+      return `${seconds.toFixed(1)} s`;
+    }
+    const minutes = Math.floor(seconds / 60);
+    const remainingSeconds = Math.round(seconds % 60);
+    return `${minutes}m ${remainingSeconds}s`;
+  }
+
   $effect(() => {
     loadInitialData();
   });
@@ -316,6 +334,9 @@
               <button class="menu-btn" onclick={rescanAll} disabled={isLoading || watchedDirectories.length === 0}>
                 {isLoading ? "Scanning..." : "Rescan All"}
               </button>
+              {#if lastScanDurationMs !== null}
+                <div class="menu-info">Last scan: {formatDuration(lastScanDurationMs)}</div>
+              {/if}
             </div>
             <div class="menu-section">
               <div class="menu-header">Debug</div>
