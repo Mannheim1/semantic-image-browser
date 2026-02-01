@@ -1,5 +1,4 @@
 use lancedb::{Connection, Table};
-use ort::session::Session;
 use serde::Serialize;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -8,6 +7,7 @@ use tauri_plugin_opener::OpenerExt;
 
 mod config;
 mod database;
+mod embedding;
 mod scanner;
 mod thumbnail;
 
@@ -49,18 +49,6 @@ pub struct ScanResult {
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub struct OnnxIoInfo {
-    pub name: String,
-    pub dtype: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct OnnxModelInfo {
-    pub inputs: Vec<OnnxIoInfo>,
-    pub outputs: Vec<OnnxIoInfo>,
-}
-
-#[derive(Debug, Clone, Serialize)]
 pub struct SiglipConfigInfo {
     pub has_text: bool,
     pub has_vision: bool,
@@ -68,55 +56,15 @@ pub struct SiglipConfigInfo {
     pub vision_hidden_size: Option<i64>,
 }
 
-#[tauri::command]
-fn test_onnx() -> Result<String, String> {
-    let _builder = Session::builder().map_err(|e| e.to_string())?;
-    Ok("ONNX Runtime initialized successfully!".to_string())
+#[derive(Debug, Clone, Serialize)]
+pub struct EmbeddingTestResult {
+    pub model_loaded: bool,
+    pub image_embedding_dim: Option<usize>,
+    pub text_embedding_dim: Option<usize>,
+    pub similarity: Option<f32>,
+    pub error: Option<String>,
 }
 
-#[tauri::command]
-fn inspect_onnx_model(path: String) -> Result<OnnxModelInfo, String> {
-    let model_path = PathBuf::from(&path);
-    let model_dir = model_path
-        .parent()
-        .ok_or("Model path has no parent directory")?;
-    let external_data_path = model_path.with_extension("onnx_data");
-    if !external_data_path.exists() {
-        return Err(format!(
-            "Missing external data file: {}",
-            external_data_path.display()
-        ));
-    }
-
-    let previous_dir = std::env::current_dir().map_err(|e| e.to_string())?;
-    std::env::set_current_dir(model_dir).map_err(|e| e.to_string())?;
-
-    let model_bytes = std::fs::read(&model_path).map_err(|e| e.to_string())?;
-    let session = Session::builder()
-        .map_err(|e| e.to_string())?
-        .commit_from_memory(&model_bytes)
-        .map_err(|e| e.to_string())?;
-
-    let mut inputs = Vec::new();
-    for input in session.inputs().iter() {
-        inputs.push(OnnxIoInfo {
-            name: input.name().to_string(),
-            dtype: format!("{}", input.dtype()),
-        });
-    }
-
-    let mut outputs = Vec::new();
-    for output in session.outputs().iter() {
-        outputs.push(OnnxIoInfo {
-            name: output.name().to_string(),
-            dtype: format!("{}", output.dtype()),
-        });
-    }
-
-    std::env::set_current_dir(previous_dir).map_err(|e| e.to_string())?;
-
-    Ok(OnnxModelInfo { inputs, outputs })
-}
 
 #[tauri::command]
 fn inspect_siglip_config(path: String) -> Result<SiglipConfigInfo, String> {
@@ -139,6 +87,79 @@ fn inspect_siglip_config(path: String) -> Result<SiglipConfigInfo, String> {
         has_vision: vision_config.is_some(),
         text_hidden_size,
         vision_hidden_size,
+    })
+}
+
+#[tauri::command]
+fn test_embedding(ort_dylib_path: String, model_dir: String, image_path: String, query: String) -> Result<EmbeddingTestResult, String> {
+    use embedding::EmbeddingModel;
+
+    let dylib_path = Path::new(&ort_dylib_path);
+    let model_path = Path::new(&model_dir);
+    let image_file = Path::new(&image_path);
+
+    // Initialize ONNX Runtime with the provided dylib
+    if let Err(e) = embedding::init_ort(dylib_path) {
+        return Ok(EmbeddingTestResult {
+            model_loaded: false,
+            image_embedding_dim: None,
+            text_embedding_dim: None,
+            similarity: None,
+            error: Some(format!("Failed to initialize ONNX Runtime: {}", e)),
+        });
+    }
+
+    // Try to load the model
+    let mut model = match EmbeddingModel::load(model_path) {
+        Ok(m) => m,
+        Err(e) => {
+            return Ok(EmbeddingTestResult {
+                model_loaded: false,
+                image_embedding_dim: None,
+                text_embedding_dim: None,
+                similarity: None,
+                error: Some(format!("Failed to load model: {}", e)),
+            });
+        }
+    };
+
+    // Try to embed the image
+    let image_emb = match model.embed_image(image_file) {
+        Ok(emb) => emb,
+        Err(e) => {
+            return Ok(EmbeddingTestResult {
+                model_loaded: true,
+                image_embedding_dim: None,
+                text_embedding_dim: None,
+                similarity: None,
+                error: Some(format!("Failed to embed image: {}", e)),
+            });
+        }
+    };
+
+    // Try to embed the text
+    let text_emb = match model.embed_text(&query) {
+        Ok(emb) => emb,
+        Err(e) => {
+            return Ok(EmbeddingTestResult {
+                model_loaded: true,
+                image_embedding_dim: Some(image_emb.len()),
+                text_embedding_dim: None,
+                similarity: None,
+                error: Some(format!("Failed to embed text: {}", e)),
+            });
+        }
+    };
+
+    // Compute cosine similarity (vectors are already L2 normalized, so dot product = cosine sim)
+    let similarity: f32 = image_emb.iter().zip(text_emb.iter()).map(|(a, b)| a * b).sum();
+
+    Ok(EmbeddingTestResult {
+        model_loaded: true,
+        image_embedding_dim: Some(image_emb.len()),
+        text_embedding_dim: Some(text_emb.len()),
+        similarity: Some(similarity),
+        error: None,
     })
 }
 
@@ -452,9 +473,8 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            test_onnx,
-            inspect_onnx_model,
             inspect_siglip_config,
+            test_embedding,
             get_config,
             add_watched_directory,
             remove_watched_directory,
