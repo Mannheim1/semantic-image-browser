@@ -366,6 +366,7 @@ pub struct SearchResult {
     pub file_size: u64,
     pub created_at: i64,
     pub modified_at: i64,
+    // TODO: Rename sort_score to distance to reflect LanceDB `_distance` semantics.
     pub sort_score: Option<f32>,
 }
 
