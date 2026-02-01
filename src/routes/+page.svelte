@@ -19,21 +19,19 @@
     modified_at: number;
   }
 
-  interface OnnxIoInfo {
-    name: string;
-    dtype: string;
-  }
-
-  interface OnnxModelInfo {
-    inputs: OnnxIoInfo[];
-    outputs: OnnxIoInfo[];
-  }
-
   interface SiglipConfigInfo {
     has_text: boolean;
     has_vision: boolean;
     text_hidden_size: number | null;
     vision_hidden_size: number | null;
+  }
+
+  interface EmbeddingTestResult {
+    model_loaded: boolean;
+    image_embedding_dim: number | null;
+    text_embedding_dim: number | null;
+    similarity: number | null;
+    error: string | null;
   }
 
   let searchQuery = $state("");
@@ -42,10 +40,19 @@
   let isLoading = $state(false);
   let watchedDirectories = $state<string[]>([]);
   let indexedCount = $state(0);
-  let onnxInfo = $state<OnnxModelInfo | null>(null);
-  let onnxError = $state("");
   let siglipInfo = $state<SiglipConfigInfo | null>(null);
   let siglipError = $state("");
+  let embeddingResult = $state<EmbeddingTestResult | null>(null);
+  let embeddingTesting = $state(false);
+
+  // Embedding test modal state
+  let showEmbeddingModal = $state(false);
+  let embeddingInputs = $state({
+    ortDylibPath: "C:\\Dev\\onnxruntime-win-x64-1.23.2\\lib\\onnxruntime.dll",
+    modelDir: "C:\\Dev\\test\\siglip2-base-patch16-256-ONNX",
+    imagePath: "",
+    query: "a photo of a cat"
+  });
 
   // Settings menu state
   let showSettingsMenu = $state(false);
@@ -150,27 +157,6 @@
     await invoke("open_app_data_folder");
   }
 
-  async function inspectOnnxModel() {
-    const selected = await open({
-      directory: false,
-      multiple: false,
-      title: "Select ONNX model",
-      filters: [{ name: "ONNX", extensions: ["onnx"] }]
-    });
-
-    if (!selected || Array.isArray(selected)) {
-      return;
-    }
-
-    try {
-      onnxInfo = await invoke("inspect_onnx_model", { path: selected });
-      onnxError = "";
-    } catch (e) {
-      onnxInfo = null;
-      onnxError = String(e);
-    }
-  }
-
   async function inspectSiglipConfig() {
     const selected = await open({
       directory: false,
@@ -190,6 +176,43 @@
       siglipInfo = null;
       siglipError = String(e);
     }
+  }
+
+  function openEmbeddingModal() {
+    showEmbeddingModal = true;
+    showSettingsMenu = false;
+  }
+
+  async function runEmbeddingTest() {
+    const { ortDylibPath, modelDir, imagePath, query } = embeddingInputs;
+
+    if (!ortDylibPath || !modelDir || !imagePath || !query) {
+      embeddingResult = {
+        model_loaded: false,
+        image_embedding_dim: null,
+        text_embedding_dim: null,
+        similarity: null,
+        error: "All fields are required"
+      };
+      return;
+    }
+
+    embeddingTesting = true;
+    embeddingResult = null;
+
+    try {
+      embeddingResult = await invoke("test_embedding", { ortDylibPath, modelDir, imagePath, query });
+    } catch (e) {
+      embeddingResult = {
+        model_loaded: false,
+        image_embedding_dim: null,
+        text_embedding_dim: null,
+        similarity: null,
+        error: String(e)
+      };
+    }
+
+    embeddingTesting = false;
   }
 
   function handleImageDblClick(img: ImageInfo) {
@@ -284,21 +307,10 @@
               <button class="menu-btn" onclick={openAppDataFolder}>Open App Data Folder</button>
               <button class="menu-btn" onclick={deleteAllThumbnails}>Delete All Thumbnails</button>
               <button class="menu-btn" onclick={clearDatabase}>Clear Database</button>
-              <button class="menu-btn" onclick={inspectOnnxModel}>Inspect ONNX Model</button>
               <button class="menu-btn" onclick={inspectSiglipConfig}>Inspect SigLIP Config</button>
-              {#if onnxError}
-                <div class="menu-info">ONNX error: {onnxError}</div>
-              {/if}
-              {#if onnxInfo}
-                <div class="menu-info">Inputs:</div>
-                {#each onnxInfo.inputs as input}
-                  <div class="menu-info">{input.name} - {input.dtype}</div>
-                {/each}
-                <div class="menu-info">Outputs:</div>
-                {#each onnxInfo.outputs as output}
-                  <div class="menu-info">{output.name} - {output.dtype}</div>
-                {/each}
-              {/if}
+              <button class="menu-btn" onclick={openEmbeddingModal}>
+                Test Embedding
+              </button>
               {#if siglipError}
                 <div class="menu-info">SigLIP error: {siglipError}</div>
               {/if}
@@ -308,6 +320,22 @@
                 <div class="menu-info">Vision tower: {siglipInfo.has_vision ? "yes" : "no"}</div>
                 <div class="menu-info">Text hidden size: {siglipInfo.text_hidden_size ?? "n/a"}</div>
                 <div class="menu-info">Vision hidden size: {siglipInfo.vision_hidden_size ?? "n/a"}</div>
+              {/if}
+              {#if embeddingResult}
+                <div class="menu-info" style="margin-top: 8px;">Embedding test:</div>
+                <div class="menu-info">Model loaded: {embeddingResult.model_loaded ? "yes" : "no"}</div>
+                {#if embeddingResult.image_embedding_dim}
+                  <div class="menu-info">Image embedding: {embeddingResult.image_embedding_dim} dims</div>
+                {/if}
+                {#if embeddingResult.text_embedding_dim}
+                  <div class="menu-info">Text embedding: {embeddingResult.text_embedding_dim} dims</div>
+                {/if}
+                {#if embeddingResult.similarity !== null}
+                  <div class="menu-info">Similarity: {embeddingResult.similarity.toFixed(4)}</div>
+                {/if}
+                {#if embeddingResult.error}
+                  <div class="menu-info" style="color: #ff6b6b;">Error: {embeddingResult.error}</div>
+                {/if}
               {/if}
             </div>
           </div>
@@ -362,6 +390,69 @@
       <button class="context-item disabled" disabled>
         Find similar
       </button>
+    </div>
+  {/if}
+
+  {#if showEmbeddingModal}
+    <div class="modal-overlay" onclick={() => showEmbeddingModal = false}>
+      <div class="modal" onclick={(e) => e.stopPropagation()}>
+        <div class="modal-header">
+          <span>Test Embedding</span>
+          <button class="modal-close" onclick={() => showEmbeddingModal = false}>×</button>
+        </div>
+        <div class="modal-body">
+          <label class="modal-label">
+            ONNX Runtime DLL
+            <input
+              type="text"
+              class="modal-input"
+              bind:value={embeddingInputs.ortDylibPath}
+              placeholder="C:\path\to\onnxruntime.dll"
+            />
+          </label>
+          <label class="modal-label">
+            Model Directory
+            <input
+              type="text"
+              class="modal-input"
+              bind:value={embeddingInputs.modelDir}
+              placeholder="C:\path\to\siglip2-model"
+            />
+          </label>
+          <label class="modal-label">
+            Image Path
+            <input
+              type="text"
+              class="modal-input"
+              bind:value={embeddingInputs.imagePath}
+              placeholder="C:\path\to\image.jpg"
+            />
+          </label>
+          <label class="modal-label">
+            Text Query
+            <input
+              type="text"
+              class="modal-input"
+              bind:value={embeddingInputs.query}
+              placeholder="a photo of a cat"
+            />
+          </label>
+        </div>
+        <div class="modal-footer">
+          {#if embeddingResult}
+            <div class="modal-result">
+              {#if embeddingResult.error}
+                <span class="result-error">Error: {embeddingResult.error}</span>
+              {:else}
+                <span>Model: ✓ | Image: {embeddingResult.image_embedding_dim}d | Text: {embeddingResult.text_embedding_dim}d | Similarity: {embeddingResult.similarity?.toFixed(4)}</span>
+              {/if}
+            </div>
+          {/if}
+          <button class="modal-btn" onclick={runEmbeddingTest} disabled={embeddingTesting}>
+            {embeddingTesting ? "Testing..." : "Run Test"}
+          </button>
+        </div>
+      </div>
     </div>
   {/if}
 </div>
@@ -666,6 +757,118 @@
 
   .context-item.disabled {
     color: var(--text-secondary);
+    cursor: not-allowed;
+  }
+
+  .modal-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.6);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 300;
+  }
+
+  .modal {
+    background: var(--bg-toolbar);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    width: 500px;
+    max-width: 90vw;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+  }
+
+  .modal-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--border-color);
+    font-weight: 500;
+  }
+
+  .modal-close {
+    background: none;
+    border: none;
+    color: var(--text-secondary);
+    font-size: 20px;
+    cursor: pointer;
+    padding: 0 4px;
+  }
+
+  .modal-close:hover {
+    color: var(--text-primary);
+  }
+
+  .modal-body {
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .modal-label {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    font-size: 12px;
+    color: var(--text-secondary);
+  }
+
+  .modal-input {
+    padding: 8px 10px;
+    background: var(--bg-base);
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    color: var(--text-primary);
+    font-size: 13px;
+    font-family: monospace;
+  }
+
+  .modal-input:focus {
+    outline: none;
+    border-color: #5a5250;
+  }
+
+  .modal-footer {
+    padding: 12px 16px;
+    border-top: 1px solid var(--border-color);
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .modal-result {
+    font-size: 12px;
+    padding: 8px;
+    background: var(--bg-base);
+    border-radius: 4px;
+  }
+
+  .result-error {
+    color: #ff6b6b;
+  }
+
+  .modal-btn {
+    padding: 8px 16px;
+    background: var(--bg-base);
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    color: var(--text-primary);
+    cursor: pointer;
+    font-size: 13px;
+  }
+
+  .modal-btn:hover:not(:disabled) {
+    background: var(--bg-hover);
+  }
+
+  .modal-btn:disabled {
+    opacity: 0.5;
     cursor: not-allowed;
   }
 </style>
