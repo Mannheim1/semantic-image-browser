@@ -9,32 +9,36 @@
 use ort::session::Session;
 use ort::value::Value;
 use std::path::Path;
-use std::sync::Once;
+use std::sync::OnceLock;
 use tokenizers::Tokenizer;
 
 use crate::database::VISUAL_EMBEDDING_DIM;
 
-/// Used to ensure ONNX Runtime is initialized only once
-static ORT_INIT: Once = Once::new();
+/// Stores the result of ORT initialization (success or error message).
+/// Using OnceLock ensures the result is computed once and remembered,
+/// so subsequent calls return the same result (including errors).
+static ORT_INIT_RESULT: OnceLock<Result<(), String>> = OnceLock::new();
 
 /// Initialize the ONNX Runtime with the library at the given path.
 /// This must be called before creating any sessions when using load-dynamic.
 /// Safe to call multiple times - only the first call has effect.
+/// Subsequent calls return the same result as the first call.
 pub fn init_ort(dylib_path: &Path) -> Result<(), String> {
-    let mut init_result: Result<(), String> = Ok(());
-
-    ORT_INIT.call_once(|| {
-        match ort::init_from(dylib_path) {
-            Ok(builder) => {
-                builder.commit();
+    ORT_INIT_RESULT
+        .get_or_init(|| {
+            match ort::init_from(dylib_path) {
+                Ok(builder) => {
+                    builder.commit();
+                    Ok(())
+                }
+                Err(e) => Err(format!(
+                    "Failed to initialize ONNX Runtime from {}: {}",
+                    dylib_path.display(),
+                    e
+                )),
             }
-            Err(e) => {
-                init_result = Err(format!("Failed to initialize ONNX Runtime from {}: {}", dylib_path.display(), e));
-            }
-        }
-    });
-
-    init_result
+        })
+        .clone()
 }
 
 /// Image size expected by the SigLIP2 model (256x256 for siglip2-base-patch16-256)
