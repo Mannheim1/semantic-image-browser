@@ -16,12 +16,67 @@ use config::AppConfig;
 use database::{ImageInfo, ImageRecord};
 use embedding::EmbeddingModel;
 
+/// Maximum number of embedding model instances to keep in the pool.
+/// This limits RAM usage (~500MB per model) while enabling parallel processing.
+/// 4 workers = ~2GB for models, which is reasonable for most systems.
+const MAX_EMBEDDING_WORKERS: usize = 4;
+
 pub struct AppState {
     pub db: Connection,
     pub table: tokio::sync::Mutex<Table>,
-    /// The embedding model, if configured and loaded successfully.
-    /// Wrapped in Mutex because inference requires &mut self.
-    pub embedding_model: Option<Mutex<EmbeddingModel>>,
+    /// Pool of embedding models for parallel processing.
+    /// Each model is wrapped in Mutex because inference requires &mut self.
+    /// Models are loaded once at startup and reused across scans to avoid
+    /// repeated disk reads and memory allocation.
+    pub embedding_pool: Option<EmbeddingPool>,
+    /// Model identifier (e.g., "siglip2-base-patch16-256") for database storage.
+    pub model_id: Option<String>,
+}
+
+/// A pool of embedding models for parallel inference.
+pub struct EmbeddingPool {
+    models: Vec<Mutex<EmbeddingModel>>,
+}
+
+impl EmbeddingPool {
+    /// Create a new pool with up to `count` model instances.
+    pub fn new(model_dir: &Path, count: usize) -> Result<Self, String> {
+        let mut models = Vec::with_capacity(count);
+        for i in 0..count {
+            match EmbeddingModel::load(model_dir) {
+                Ok(model) => models.push(Mutex::new(model)),
+                Err(e) => {
+                    // If we failed to load any models, that's an error.
+                    // If we loaded at least one, we can continue with fewer workers.
+                    if models.is_empty() {
+                        return Err(format!("Failed to load embedding model: {}", e));
+                    } else {
+                        eprintln!("Warning: Could only load {} of {} embedding models: {}", i, count, e);
+                        break;
+                    }
+                }
+            }
+        }
+        println!("Loaded {} embedding model instance(s) for parallel processing", models.len());
+        Ok(Self { models })
+    }
+
+    /// Get the number of models in the pool.
+    pub fn len(&self) -> usize {
+        self.models.len()
+    }
+
+    /// Get a reference to a model by index.
+    pub fn get(&self, index: usize) -> Option<&Mutex<EmbeddingModel>> {
+        self.models.get(index)
+    }
+
+    /// Embed text using the first available model (for search queries).
+    pub fn embed_text(&self, text: &str) -> Result<Vec<f32>, String> {
+        let model = self.models.first().ok_or("No models in pool")?;
+        let mut guard = model.lock().map_err(|e| format!("Failed to lock model: {}", e))?;
+        guard.embed_text(text)
+    }
 }
 
 fn thumbnails_dir(app: &AppHandle, _config: &AppConfig) -> Result<PathBuf, String> {
@@ -184,7 +239,7 @@ async fn set_model_config(app: AppHandle, ort_dylib_path: String, model_dir: Str
 
 #[tauri::command]
 fn get_embedding_model_status(state: tauri::State<'_, AppState>) -> bool {
-    state.embedding_model.is_some()
+    state.embedding_pool.is_some()
 }
 
 #[tauri::command]
@@ -200,18 +255,12 @@ async fn add_watched_directory(app: AppHandle, state: tauri::State<'_, AppState>
     let thumb_dir = thumbnails_dir(&app, &cfg)?;
     let table = state.table.lock().await;
 
-    // Get model ID from config (the directory name is a reasonable identifier)
-    let model_id = cfg.model_dir.as_ref().and_then(|p| {
-        Path::new(p).file_name().and_then(|n| n.to_str()).map(|s| s.to_string())
-    });
-
     let (result, _) = scan_directory_internal(
         &table,
         &thumb_dir,
         &path,
-        state.embedding_model.as_ref(),
-        model_id.as_deref(),
-        cfg.model_dir.as_deref(),
+        state.embedding_pool.as_ref(),
+        state.model_id.as_deref(),
     ).await?;
     Ok(result)
 }
@@ -245,11 +294,6 @@ async fn rescan_all(app: AppHandle, state: tauri::State<'_, AppState>) -> Result
     let cfg = config::load_config(&app)?;
     let thumb_dir = thumbnails_dir(&app, &cfg)?;
 
-    // Get model ID from config (the directory name is a reasonable identifier)
-    let model_id = cfg.model_dir.as_ref().and_then(|p| {
-        Path::new(p).file_name().and_then(|n| n.to_str()).map(|s| s.to_string())
-    });
-
     let mut total_result = ScanResult {
         images_found: 0,
         images_added: 0,
@@ -266,9 +310,8 @@ async fn rescan_all(app: AppHandle, state: tauri::State<'_, AppState>) -> Result
             &table,
             &thumb_dir,
             dir,
-            state.embedding_model.as_ref(),
-            model_id.as_deref(),
-            cfg.model_dir.as_deref(),
+            state.embedding_pool.as_ref(),
+            state.model_id.as_deref(),
         ).await {
             Ok((result, seen_paths)) => {
                 total_result.images_found += result.images_found;
@@ -343,18 +386,12 @@ async fn search_images(state: tauri::State<'_, AppState>, query: String) -> Resu
         return database::get_all_images(&table).await;
     }
 
-    // Try to generate text embedding (must release mutex before await)
-    let query_embedding = if let Some(model) = &state.embedding_model {
-        match model.lock() {
-            Ok(mut m) => match m.embed_text(&query) {
-                Ok(emb) => Some(emb),
-                Err(e) => {
-                    eprintln!("Text embedding failed, falling back to filename search: {}", e);
-                    None
-                }
-            },
+    // Try to generate text embedding using the pool
+    let query_embedding = if let Some(pool) = &state.embedding_pool {
+        match pool.embed_text(&query) {
+            Ok(emb) => Some(emb),
             Err(e) => {
-                eprintln!("Failed to lock embedding model: {}", e);
+                eprintln!("Text embedding failed, falling back to filename search: {}", e);
                 None
             }
         }
@@ -432,9 +469,8 @@ async fn scan_directory_internal(
     table: &lancedb::Table,
     thumb_dir: &Path,
     dir: &str,
-    embedding_model: Option<&Mutex<EmbeddingModel>>,
+    embedding_pool: Option<&EmbeddingPool>,
     model_id: Option<&str>,
-    model_dir: Option<&str>,
 ) -> Result<(ScanResult, HashSet<String>), String> {
     let dir_path = Path::new(dir);
     let files = tokio::task::spawn_blocking({
@@ -527,62 +563,64 @@ async fn scan_directory_internal(
             .map(|(p, _)| p.clone())
             .collect();
 
+        // Generate embeddings using the pre-loaded model pool.
+        // Each worker thread uses its own model instance from the pool,
+        // avoiding the need to reload models and enabling true parallelism.
         let (embeddings, embedding_errors): (Vec<Option<Vec<f32>>>, Vec<String>) =
-            if embedding_model.is_some() && model_dir.is_some() {
-                let model_dir = std::sync::Arc::new(PathBuf::from(model_dir.unwrap()));
-                tokio::task::spawn_blocking(move || {
-                    let num_threads = std::thread::available_parallelism()
-                        .map(|n| n.get())
-                        .unwrap_or(4);
-                    let chunk_size = (paths_for_embeddings.len() + num_threads - 1) / num_threads;
+            if let Some(pool) = embedding_pool {
+                let num_workers = pool.len();
+                let chunk_size = (paths_for_embeddings.len() + num_workers - 1) / num_workers;
 
-                    let results = std::sync::Mutex::new(vec![None; paths_for_embeddings.len()]);
-                    let errors = std::sync::Mutex::new(Vec::new());
+                let results = std::sync::Mutex::new(vec![None; paths_for_embeddings.len()]);
+                let errors = std::sync::Mutex::new(Vec::new());
 
-                    std::thread::scope(|s| {
-                        for (chunk_idx, chunk) in paths_for_embeddings.chunks(chunk_size).enumerate() {
-                            let errors = &errors;
-                            let results = &results;
-                            let model_dir = model_dir.clone();
-                            let start = chunk_idx * chunk_size;
-                            let chunk = chunk.to_vec();
+                std::thread::scope(|s| {
+                    for (worker_idx, chunk) in paths_for_embeddings.chunks(chunk_size).enumerate() {
+                        let errors = &errors;
+                        let results = &results;
+                        let start = worker_idx * chunk_size;
+                        let chunk = chunk.to_vec();
 
-                            s.spawn(move || {
-                                let mut model = match EmbeddingModel::load(&model_dir) {
-                                    Ok(m) => m,
-                                    Err(e) => {
-                                        errors.lock().unwrap().push(format!(
-                                            "Failed to load embedding model: {}",
-                                            e
-                                        ));
-                                        return;
+                        // Each worker gets its own model from the pool
+                        let model_mutex = match pool.get(worker_idx) {
+                            Some(m) => m,
+                            None => continue, // Shouldn't happen, but be safe
+                        };
+
+                        s.spawn(move || {
+                            // Lock this worker's model for the duration of processing its chunk
+                            let mut model = match model_mutex.lock() {
+                                Ok(m) => m,
+                                Err(e) => {
+                                    errors.lock().unwrap().push(format!(
+                                        "Failed to lock embedding model {}: {}",
+                                        worker_idx, e
+                                    ));
+                                    return;
+                                }
+                            };
+
+                            for (offset, path) in chunk.iter().enumerate() {
+                                let image_path = Path::new(path);
+                                match model.embed_image(image_path) {
+                                    Ok(emb) => {
+                                        results.lock().unwrap()[start + offset] = Some(emb);
                                     }
-                                };
-
-                                for (offset, path) in chunk.iter().enumerate() {
-                                    let image_path = Path::new(path);
-                                    match model.embed_image(image_path) {
-                                        Ok(emb) => {
-                                            results.lock().unwrap()[start + offset] = Some(emb);
-                                        }
-                                        Err(e) => {
-                                            errors
-                                                .lock()
-                                                .unwrap()
-                                                .push(format!("Embedding error for {}: {}", path, e));
-                                        }
+                                    Err(e) => {
+                                        errors
+                                            .lock()
+                                            .unwrap()
+                                            .push(format!("Embedding error for {}: {}", path, e));
                                     }
                                 }
-                            });
-                        }
-                    });
+                            }
+                        });
+                    }
+                });
 
-                    let errors = errors.into_inner().unwrap();
-                    let results = results.into_inner().unwrap();
-                    Ok::<(Vec<Option<Vec<f32>>>, Vec<String>), String>((results, errors))
-                })
-                .await
-                .map_err(|e| e.to_string())??
+                let errors = errors.into_inner().unwrap();
+                let results = results.into_inner().unwrap();
+                (results, errors)
             } else {
                 (vec![None; paths_for_embeddings.len()], Vec::new())
             };
@@ -629,40 +667,49 @@ pub fn run() {
                 let db = database::open_connection(&handle, &cfg).await?;
                 let table = database::get_or_create_table(&db).await?;
 
-                // Try to load the embedding model if configured
-                let embedding_model = match (&cfg.ort_dylib_path, &cfg.model_dir) {
+                // Try to load the embedding model pool if configured
+                let (embedding_pool, model_id) = match (&cfg.ort_dylib_path, &cfg.model_dir) {
                     (Some(ort_path), Some(model_path)) => {
                         let ort_path = Path::new(ort_path);
                         let model_path = Path::new(model_path);
 
+                        // Extract model ID from directory name
+                        let model_id = model_path
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .map(|s| s.to_string());
+
                         // Initialize ONNX Runtime
                         if let Err(e) = embedding::init_ort(ort_path) {
                             eprintln!("Warning: Failed to initialize ONNX Runtime: {}", e);
-                            None
+                            (None, None)
                         } else {
-                            // Load the model
-                            match EmbeddingModel::load(model_path) {
-                                Ok(model) => {
-                                    println!("Embedding model loaded successfully");
-                                    Some(Mutex::new(model))
-                                }
+                            // Determine number of workers (capped at MAX_EMBEDDING_WORKERS)
+                            let num_workers = std::thread::available_parallelism()
+                                .map(|n| n.get().min(MAX_EMBEDDING_WORKERS))
+                                .unwrap_or(2);
+
+                            // Load the model pool
+                            match EmbeddingPool::new(model_path, num_workers) {
+                                Ok(pool) => (Some(pool), model_id),
                                 Err(e) => {
-                                    eprintln!("Warning: Failed to load embedding model: {}", e);
-                                    None
+                                    eprintln!("Warning: Failed to load embedding model pool: {}", e);
+                                    (None, None)
                                 }
                             }
                         }
                     }
                     _ => {
                         println!("Embedding model not configured (set ort_dylib_path and model_dir in config)");
-                        None
+                        (None, None)
                     }
                 };
 
                 handle.manage(AppState {
                     db,
                     table: tokio::sync::Mutex::new(table),
-                    embedding_model,
+                    embedding_pool,
+                    model_id,
                 });
                 Ok::<(), String>(())
             })
