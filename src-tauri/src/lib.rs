@@ -2,6 +2,7 @@ use lancedb::{Connection, Table};
 use serde::Serialize;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use tauri::{AppHandle, Manager};
 use tauri_plugin_opener::OpenerExt;
 
@@ -13,10 +14,14 @@ mod thumbnail;
 
 use config::AppConfig;
 use database::{ImageInfo, ImageRecord};
+use embedding::EmbeddingModel;
 
 pub struct AppState {
     pub db: Connection,
     pub table: tokio::sync::Mutex<Table>,
+    /// The embedding model, if configured and loaded successfully.
+    /// Wrapped in Mutex because inference requires &mut self.
+    pub embedding_model: Option<Mutex<EmbeddingModel>>,
 }
 
 fn thumbnails_dir(app: &AppHandle, _config: &AppConfig) -> Result<PathBuf, String> {
@@ -166,6 +171,20 @@ fn test_embedding(ort_dylib_path: String, model_dir: String, image_path: String,
 #[tauri::command]
 async fn get_config(app: AppHandle) -> Result<AppConfig, String> {
     config::load_config(&app)
+}
+
+#[tauri::command]
+async fn set_model_config(app: AppHandle, ort_dylib_path: String, model_dir: String) -> Result<(), String> {
+    let mut cfg = config::load_config(&app)?;
+    cfg.ort_dylib_path = Some(ort_dylib_path);
+    cfg.model_dir = Some(model_dir);
+    config::save_config(&app, &cfg)?;
+    Ok(())
+}
+
+#[tauri::command]
+fn get_embedding_model_status(state: tauri::State<'_, AppState>) -> bool {
+    state.embedding_model.is_some()
 }
 
 #[tauri::command]
@@ -466,7 +485,42 @@ pub fn run() {
                 let cfg = config::load_config(&handle)?;
                 let db = database::open_connection(&handle, &cfg).await?;
                 let table = database::get_or_create_table(&db).await?;
-                handle.manage(AppState { db, table: tokio::sync::Mutex::new(table) });
+
+                // Try to load the embedding model if configured
+                let embedding_model = match (&cfg.ort_dylib_path, &cfg.model_dir) {
+                    (Some(ort_path), Some(model_path)) => {
+                        let ort_path = Path::new(ort_path);
+                        let model_path = Path::new(model_path);
+
+                        // Initialize ONNX Runtime
+                        if let Err(e) = embedding::init_ort(ort_path) {
+                            eprintln!("Warning: Failed to initialize ONNX Runtime: {}", e);
+                            None
+                        } else {
+                            // Load the model
+                            match EmbeddingModel::load(model_path) {
+                                Ok(model) => {
+                                    println!("Embedding model loaded successfully");
+                                    Some(Mutex::new(model))
+                                }
+                                Err(e) => {
+                                    eprintln!("Warning: Failed to load embedding model: {}", e);
+                                    None
+                                }
+                            }
+                        }
+                    }
+                    _ => {
+                        println!("Embedding model not configured (set ort_dylib_path and model_dir in config)");
+                        None
+                    }
+                };
+
+                handle.manage(AppState {
+                    db,
+                    table: tokio::sync::Mutex::new(table),
+                    embedding_model,
+                });
                 Ok::<(), String>(())
             })
             .expect("Failed to initialize database");
@@ -476,6 +530,8 @@ pub fn run() {
             inspect_siglip_config,
             test_embedding,
             get_config,
+            set_model_config,
+            get_embedding_model_status,
             add_watched_directory,
             remove_watched_directory,
             rescan_all,

@@ -6,6 +6,10 @@ use tauri::{AppHandle, Manager};
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AppConfig {
     pub watched_directories: Vec<String>,
+    /// Path to the ONNX Runtime DLL (onnxruntime.dll)
+    pub ort_dylib_path: Option<String>,
+    /// Path to the SigLIP2 ONNX model directory
+    pub model_dir: Option<String>,
 }
 
 pub fn config_path(app: &AppHandle) -> Result<PathBuf, String> {
