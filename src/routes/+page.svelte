@@ -594,7 +594,7 @@
       <aside class="image-panel">
         <div class="panel-header">
           <div class="panel-title" title={selectedImage.path}>{getFilename(selectedImage.path)}</div>
-          <button class="panel-close" onclick={closePanel}>Ã—</button>
+          <button class="panel-close" onclick={closePanel}>X</button>
         </div>
         <div class="panel-body">
           <div class="panel-image-wrapper">
@@ -1181,6 +1181,7 @@
     font-size: 18px;
     cursor: pointer;
     padding: 0 4px;
+    user-select: none;
   }
 
   .panel-close:hover {
