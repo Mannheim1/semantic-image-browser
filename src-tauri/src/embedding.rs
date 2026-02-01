@@ -6,6 +6,7 @@
 //! - Text tokenization
 //! - Generating embeddings for images and text queries
 
+use ort::execution_providers::CUDAExecutionProvider;
 use ort::session::Session;
 use ort::value::Value;
 use std::path::Path;
@@ -67,7 +68,9 @@ impl EmbeddingModel {
     /// - `onnx/vision_model.onnx`
     /// - `onnx/text_model.onnx`
     /// - `tokenizer.json`
-    pub fn load(model_dir: &Path) -> Result<Self, String> {
+    ///
+    /// If `use_gpu` is true, attempts to use CUDA execution provider.
+    pub fn load(model_dir: &Path, use_gpu: bool) -> Result<Self, String> {
         let vision_path = model_dir.join("onnx").join("vision_model.onnx");
         let text_path = model_dir.join("onnx").join("text_model.onnx");
         let tokenizer_path = model_dir.join("tokenizer.json");
@@ -84,16 +87,34 @@ impl EmbeddingModel {
         }
 
         // Load vision model
-        let vision_session = Session::builder()
-            .map_err(|e| format!("Failed to create vision session builder: {}", e))?
-            .commit_from_file(&vision_path)
-            .map_err(|e| format!("Failed to load vision model: {}", e))?;
+        let vision_session = if use_gpu {
+            Session::builder()
+                .map_err(|e| format!("Failed to create vision session builder: {}", e))?
+                .with_execution_providers([CUDAExecutionProvider::default().build().error_on_failure()])
+                .map_err(|e| format!("Failed to register CUDA execution provider for vision model: {}. Make sure CUDA 11.8+ and cuDNN are installed.", e))?
+                .commit_from_file(&vision_path)
+                .map_err(|e| format!("Failed to load vision model: {}", e))?
+        } else {
+            Session::builder()
+                .map_err(|e| format!("Failed to create vision session builder: {}", e))?
+                .commit_from_file(&vision_path)
+                .map_err(|e| format!("Failed to load vision model: {}", e))?
+        };
 
         // Load text model
-        let text_session = Session::builder()
-            .map_err(|e| format!("Failed to create text session builder: {}", e))?
-            .commit_from_file(&text_path)
-            .map_err(|e| format!("Failed to load text model: {}", e))?;
+        let text_session = if use_gpu {
+            Session::builder()
+                .map_err(|e| format!("Failed to create text session builder: {}", e))?
+                .with_execution_providers([CUDAExecutionProvider::default().build().error_on_failure()])
+                .map_err(|e| format!("Failed to register CUDA execution provider for text model: {}. Make sure CUDA 11.8+ and cuDNN are installed.", e))?
+                .commit_from_file(&text_path)
+                .map_err(|e| format!("Failed to load text model: {}", e))?
+        } else {
+            Session::builder()
+                .map_err(|e| format!("Failed to create text session builder: {}", e))?
+                .commit_from_file(&text_path)
+                .map_err(|e| format!("Failed to load text model: {}", e))?
+        };
 
         // Load tokenizer
         let tokenizer = Tokenizer::from_file(&tokenizer_path)
