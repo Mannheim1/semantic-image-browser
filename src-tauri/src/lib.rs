@@ -43,10 +43,11 @@ pub struct EmbeddingPool {
 
 impl EmbeddingPool {
     /// Create a new pool with up to `count` model instances.
-    pub fn new(model_dir: &Path, count: usize) -> Result<Self, String> {
+    /// If `use_gpu` is true, attempts to use CUDA execution provider.
+    pub fn new(model_dir: &Path, count: usize, use_gpu: bool) -> Result<Self, String> {
         let mut models = Vec::with_capacity(count);
         for i in 0..count {
-            match EmbeddingModel::load(model_dir) {
+            match EmbeddingModel::load(model_dir, use_gpu) {
                 Ok(model) => models.push(Mutex::new(model)),
                 Err(e) => {
                     // If we failed to load any models, that's an error.
@@ -60,7 +61,8 @@ impl EmbeddingPool {
                 }
             }
         }
-        println!("Loaded {} embedding model instance(s) for parallel processing", models.len());
+        let runtime_label = if use_gpu { "GPU" } else { "CPU" };
+        println!("Loaded {} embedding model instance(s) for parallel processing ({})", models.len(), runtime_label);
         Ok(Self { models })
     }
 
@@ -213,8 +215,8 @@ fn test_embedding(ort_dylib_path: String, model_dir: String, image_path: String,
         });
     }
 
-    // Try to load the model
-    let mut model = match EmbeddingModel::load(model_path) {
+    // Try to load the model (test always uses CPU for simplicity)
+    let mut model = match EmbeddingModel::load(model_path, false) {
         Ok(m) => m,
         Err(e) => {
             return Ok(EmbeddingTestResult {
@@ -847,6 +849,9 @@ pub fn run() {
                     }
                 };
 
+                // Check if GPU runtime is configured
+                let use_gpu = cfg.runtime_type.as_deref() == Some("gpu");
+
                 // Try to load the embedding model pool if ORT and model are available
                 let (embedding_pool, model_id) = match (ort_path, &cfg.model_dir) {
                     (Some(ort_path), Some(model_path)) => {
@@ -869,7 +874,7 @@ pub fn run() {
                                 .unwrap_or(2);
 
                             // Load the model pool
-                            match EmbeddingPool::new(model_path, num_workers) {
+                            match EmbeddingPool::new(model_path, num_workers, use_gpu) {
                                 Ok(pool) => (Some(pool), model_id),
                                 Err(e) => {
                                     eprintln!("Warning: Failed to load embedding model pool: {}", e);
