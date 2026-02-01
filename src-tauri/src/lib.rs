@@ -11,6 +11,7 @@ use tauri_plugin_opener::OpenerExt;
 mod config;
 mod database;
 mod embedding;
+mod ort_download;
 mod scanner;
 mod thumbnail;
 
@@ -542,6 +543,60 @@ async fn open_app_data_folder(app: AppHandle) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
+// ============================================================================
+// ONNX Runtime download commands
+// ============================================================================
+
+#[derive(Clone, serde::Serialize)]
+pub struct OrtDownloadProgress {
+    pub downloaded: u64,
+    pub total: u64,
+}
+
+/// Get the current ONNX Runtime installation status.
+#[tauri::command]
+fn get_ort_status(app: AppHandle) -> Result<ort_download::OrtStatus, String> {
+    ort_download::get_ort_status(&app)
+}
+
+/// Get the download size for a runtime type.
+#[tauri::command]
+fn get_ort_download_size(runtime_type: String) -> Result<Option<u64>, String> {
+    let rt = ort_download::RuntimeType::from_str(&runtime_type)
+        .ok_or_else(|| format!("Invalid runtime type: {}", runtime_type))?;
+    Ok(ort_download::get_download_size(rt))
+}
+
+/// Download and install ONNX Runtime.
+#[tauri::command]
+async fn download_ort(app: AppHandle, runtime_type: String) -> Result<String, String> {
+    let rt = ort_download::RuntimeType::from_str(&runtime_type)
+        .ok_or_else(|| format!("Invalid runtime type: {}", runtime_type))?;
+
+    // Save the runtime type to config
+    let mut cfg = config::load_config(&app)?;
+    cfg.runtime_type = Some(runtime_type.clone());
+    config::save_config(&app, &cfg)?;
+
+    // Create a channel for progress updates
+    let app_clone = app.clone();
+    let progress_callback = move |downloaded: u64, total: u64| {
+        let _ = app_clone.emit("ort_download_progress", OrtDownloadProgress { downloaded, total });
+    };
+
+    let lib_path = ort_download::download_ort(&app, rt, progress_callback).await?;
+
+    Ok(lib_path.to_string_lossy().to_string())
+}
+
+/// Check if GPU runtime is available for this platform.
+#[tauri::command]
+fn is_gpu_available() -> bool {
+    ort_download::Platform::detect()
+        .map(|p| p.gpu_available())
+        .unwrap_or(false)
+}
+
 async fn scan_directory_internal(
     table: &lancedb::Table,
     thumb_dir: &Path,
@@ -762,10 +817,39 @@ pub fn run() {
                 let db = database::open_connection(&handle, &cfg).await?;
                 let table = database::get_or_create_table(&db).await?;
 
-                // Try to load the embedding model pool if configured
-                let (embedding_pool, model_id) = match (&cfg.ort_dylib_path, &cfg.model_dir) {
+                // Determine the ONNX Runtime library path:
+                // 1. If ort_dylib_path is set in config (dev override), use that
+                // 2. Otherwise, check if runtime is downloaded to app data
+                let ort_path: Option<PathBuf> = if let Some(override_path) = &cfg.ort_dylib_path {
+                    let p = PathBuf::from(override_path);
+                    if p.exists() {
+                        println!("Using ONNX Runtime from config override: {}", p.display());
+                        Some(p)
+                    } else {
+                        eprintln!("Warning: Configured ort_dylib_path does not exist: {}", override_path);
+                        None
+                    }
+                } else {
+                    // Check for downloaded runtime
+                    match ort_download::get_ort_library_path(&handle) {
+                        Ok(Some(p)) => {
+                            println!("Using downloaded ONNX Runtime: {}", p.display());
+                            Some(p)
+                        }
+                        Ok(None) => {
+                            println!("ONNX Runtime not installed. Use the settings to download it.");
+                            None
+                        }
+                        Err(e) => {
+                            eprintln!("Warning: Failed to check for ONNX Runtime: {}", e);
+                            None
+                        }
+                    }
+                };
+
+                // Try to load the embedding model pool if ORT and model are available
+                let (embedding_pool, model_id) = match (ort_path, &cfg.model_dir) {
                     (Some(ort_path), Some(model_path)) => {
-                        let ort_path = Path::new(ort_path);
                         let model_path = Path::new(model_path);
 
                         // Extract model ID from directory name
@@ -775,7 +859,7 @@ pub fn run() {
                             .map(|s| s.to_string());
 
                         // Initialize ONNX Runtime
-                        if let Err(e) = embedding::init_ort(ort_path) {
+                        if let Err(e) = embedding::init_ort(&ort_path) {
                             eprintln!("Warning: Failed to initialize ONNX Runtime: {}", e);
                             (None, None)
                         } else {
@@ -794,8 +878,12 @@ pub fn run() {
                             }
                         }
                     }
-                    _ => {
-                        println!("Embedding model not configured (set ort_dylib_path and model_dir in config)");
+                    (None, _) => {
+                        println!("ONNX Runtime not available. Semantic search will be disabled.");
+                        (None, None)
+                    }
+                    (_, None) => {
+                        println!("Model directory not configured. Semantic search will be disabled.");
                         (None, None)
                     }
                 };
@@ -829,6 +917,10 @@ pub fn run() {
             open_image,
             show_in_folder,
             delete_all_thumbnails,
+            get_ort_status,
+            get_ort_download_size,
+            download_ort,
+            is_gpu_available,
             clear_database,
             open_app_data_folder
         ])

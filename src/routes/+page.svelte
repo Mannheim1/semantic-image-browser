@@ -42,6 +42,18 @@
     total: number;
   }
 
+  interface OrtStatus {
+    installed: boolean;
+    library_path: string | null;
+    gpu_available: boolean;
+    platform: string;
+  }
+
+  interface OrtDownloadProgress {
+    downloaded: number;
+    total: number;
+  }
+
   let searchQuery = $state("");
   let images = $state<ImageInfo[]>([]);
   let thumbnails = $state<Record<string, string | null>>({});
@@ -55,6 +67,14 @@
   let embeddingModelLoaded = $state(false);
   let lastScanDurationMs = $state<number | null>(null);
   let scanProgress = $state<ScanProgressPayload | null>(null);
+
+  // ONNX Runtime state
+  let ortStatus = $state<OrtStatus | null>(null);
+  let showOrtModal = $state(false);
+  let ortDownloading = $state(false);
+  let ortDownloadProgress = $state<OrtDownloadProgress | null>(null);
+  let ortDownloadError = $state<string | null>(null);
+  let selectedRuntimeType = $state<"cpu" | "gpu">("cpu");
 
   // Embedding test modal state
   let showEmbeddingModal = $state(false);
@@ -118,7 +138,43 @@
     watchedDirectories = await invoke("get_watched_directories");
     indexedCount = await invoke("get_indexed_count");
     embeddingModelLoaded = await invoke("get_embedding_model_status");
+    ortStatus = await invoke("get_ort_status");
     await search("");
+  }
+
+  function formatBytes(bytes: number): string {
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  }
+
+  async function openOrtModal() {
+    showOrtModal = true;
+    showSettingsMenu = false;
+    ortDownloadError = null;
+    ortDownloadProgress = null;
+    // Refresh status
+    ortStatus = await invoke("get_ort_status");
+  }
+
+  let ortNeedsRestart = $state(false);
+
+  async function downloadOrt() {
+    ortDownloading = true;
+    ortDownloadError = null;
+    ortDownloadProgress = { downloaded: 0, total: 0 };
+
+    try {
+      await invoke("download_ort", { runtimeType: selectedRuntimeType });
+      // Refresh status after download
+      ortStatus = await invoke("get_ort_status");
+      ortDownloadProgress = null;
+      ortNeedsRestart = true;
+    } catch (e) {
+      ortDownloadError = String(e);
+    }
+
+    ortDownloading = false;
   }
 
   async function addDirectory() {
@@ -327,12 +383,17 @@
   });
 
   onMount(() => {
-    const unlistenPromise = listen<ScanProgressPayload>("scan_progress", (event) => {
+    const unlistenScanPromise = listen<ScanProgressPayload>("scan_progress", (event) => {
       scanProgress = event.payload;
     });
 
+    const unlistenOrtPromise = listen<OrtDownloadProgress>("ort_download_progress", (event) => {
+      ortDownloadProgress = event.payload;
+    });
+
     return () => {
-      unlistenPromise.then((unlisten) => unlisten());
+      unlistenScanPromise.then((unlisten) => unlisten());
+      unlistenOrtPromise.then((unlisten) => unlisten());
     };
   });
 </script>
@@ -400,9 +461,18 @@
               {/if}
             </div>
             <div class="menu-section">
+              <div class="menu-header">Runtime</div>
+              <div class="menu-info">
+                ONNX Runtime: {ortStatus?.installed ? "✓ Installed" : "✗ Not installed"}
+              </div>
+              <div class="menu-info">Embedding model: {embeddingModelLoaded ? "✓ Loaded" : "✗ Not configured"}</div>
+              <button class="menu-btn" onclick={openOrtModal}>
+                {ortStatus?.installed ? "Manage Runtime" : "Setup Runtime"}
+              </button>
+            </div>
+            <div class="menu-section">
               <div class="menu-header">Debug</div>
               <div class="menu-info">Indexed: {indexedCount} images</div>
-              <div class="menu-info">Embedding model: {embeddingModelLoaded ? "✓ Loaded" : "✗ Not configured"}</div>
               <button class="menu-btn" onclick={openAppDataFolder}>Open App Data Folder</button>
               <button class="menu-btn" onclick={deleteAllThumbnails}>Delete All Thumbnails</button>
               <button class="menu-btn" onclick={clearDatabase}>Clear Database</button>
@@ -569,6 +639,122 @@
             </button>
             <button class="modal-btn" onclick={saveModelConfig}>
               Save Config
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  {/if}
+
+  {#if showOrtModal}
+    <div class="modal-overlay" onclick={() => { if (!ortDownloading) showOrtModal = false; }}>
+      <div class="modal" onclick={(e) => e.stopPropagation()}>
+        <div class="modal-header">
+          <span>ONNX Runtime Setup</span>
+          <button class="modal-close" onclick={() => { if (!ortDownloading) showOrtModal = false; }} disabled={ortDownloading}>×</button>
+        </div>
+        <div class="modal-body">
+          {#if ortStatus?.installed}
+            <div class="ort-status ort-status-ok">
+              <div class="ort-status-icon">✓</div>
+              <div class="ort-status-text">
+                <div>ONNX Runtime is installed</div>
+                <div class="ort-status-detail">{ortStatus.library_path}</div>
+              </div>
+            </div>
+          {:else}
+            <div class="ort-status ort-status-missing">
+              <div class="ort-status-icon">!</div>
+              <div class="ort-status-text">
+                <div>ONNX Runtime is not installed</div>
+                <div class="ort-status-detail">Required for semantic image search</div>
+              </div>
+            </div>
+          {/if}
+
+          <div class="ort-info">
+            <div class="ort-info-row">
+              <span>Platform:</span>
+              <span>{ortStatus?.platform ?? "Unknown"}</span>
+            </div>
+            <div class="ort-info-row">
+              <span>GPU Support:</span>
+              <span>{ortStatus?.gpu_available ? "Available" : "Not available"}</span>
+            </div>
+          </div>
+
+          {#if !ortDownloading}
+            <div class="ort-runtime-select">
+              <div class="ort-runtime-label">Select Runtime Type:</div>
+              <label class="ort-runtime-option">
+                <input type="radio" bind:group={selectedRuntimeType} value="cpu" />
+                <div class="ort-runtime-info">
+                  <span class="ort-runtime-name">CPU (Recommended)</span>
+                  <span class="ort-runtime-desc">Works on all systems, ~78 MB download</span>
+                </div>
+              </label>
+              {#if ortStatus?.gpu_available}
+                <label class="ort-runtime-option">
+                  <input type="radio" bind:group={selectedRuntimeType} value="gpu" />
+                  <div class="ort-runtime-info">
+                    <span class="ort-runtime-name">GPU (NVIDIA CUDA)</span>
+                    <span class="ort-runtime-desc">Faster processing, ~326 MB download. Requires NVIDIA GPU with CUDA 11.8+</span>
+                  </div>
+                </label>
+              {/if}
+            </div>
+          {/if}
+
+          {#if ortDownloading && ortDownloadProgress}
+            <div class="ort-progress">
+              <div class="ort-progress-text">
+                Downloading... {formatBytes(ortDownloadProgress.downloaded)}
+                {#if ortDownloadProgress.total > 0}
+                  / {formatBytes(ortDownloadProgress.total)}
+                {/if}
+              </div>
+              <div class="ort-progress-bar">
+                <div
+                  class="ort-progress-fill"
+                  style="width: {ortDownloadProgress.total > 0 ? (ortDownloadProgress.downloaded / ortDownloadProgress.total * 100) : 0}%"
+                ></div>
+              </div>
+            </div>
+          {/if}
+
+          {#if ortDownloadError}
+            <div class="ort-error">
+              Error: {ortDownloadError}
+            </div>
+          {/if}
+
+          {#if ortNeedsRestart}
+            <div class="ort-restart-notice">
+              Runtime downloaded successfully. Please restart the app to use the new runtime.
+            </div>
+          {/if}
+        </div>
+        <div class="modal-footer">
+          <div class="modal-buttons">
+            <button
+              class="modal-btn modal-btn-primary"
+              onclick={downloadOrt}
+              disabled={ortDownloading}
+            >
+              {#if ortDownloading}
+                Downloading...
+              {:else if ortStatus?.installed}
+                Reinstall Runtime
+              {:else}
+                Download Runtime
+              {/if}
+            </button>
+            <button
+              class="modal-btn"
+              onclick={() => showOrtModal = false}
+              disabled={ortDownloading}
+            >
+              {ortStatus?.installed ? "Close" : "Cancel"}
             </button>
           </div>
         </div>
@@ -995,5 +1181,165 @@
   .modal-btn:disabled {
     opacity: 0.5;
     cursor: not-allowed;
+  }
+
+  .modal-btn-primary {
+    background: #3a5a3a;
+    border-color: #4a6a4a;
+  }
+
+  .modal-btn-primary:hover:not(:disabled) {
+    background: #4a6a4a;
+  }
+
+  /* ORT Modal Styles */
+  .ort-status {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px;
+    border-radius: 6px;
+    margin-bottom: 12px;
+  }
+
+  .ort-status-ok {
+    background: rgba(58, 90, 58, 0.3);
+    border: 1px solid #4a6a4a;
+  }
+
+  .ort-status-missing {
+    background: rgba(90, 58, 58, 0.3);
+    border: 1px solid #6a4a4a;
+  }
+
+  .ort-status-icon {
+    font-size: 24px;
+    width: 32px;
+    text-align: center;
+  }
+
+  .ort-status-ok .ort-status-icon {
+    color: #6a9a6a;
+  }
+
+  .ort-status-missing .ort-status-icon {
+    color: #9a6a6a;
+  }
+
+  .ort-status-text {
+    flex: 1;
+  }
+
+  .ort-status-detail {
+    font-size: 11px;
+    color: var(--text-secondary);
+    margin-top: 2px;
+    word-break: break-all;
+  }
+
+  .ort-info {
+    background: var(--bg-base);
+    border-radius: 6px;
+    padding: 12px;
+    margin-bottom: 12px;
+  }
+
+  .ort-info-row {
+    display: flex;
+    justify-content: space-between;
+    font-size: 13px;
+    padding: 4px 0;
+  }
+
+  .ort-info-row span:first-child {
+    color: var(--text-secondary);
+  }
+
+  .ort-runtime-select {
+    margin-top: 12px;
+  }
+
+  .ort-runtime-label {
+    font-size: 12px;
+    color: var(--text-secondary);
+    margin-bottom: 8px;
+  }
+
+  .ort-runtime-option {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 10px;
+    background: var(--bg-base);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    margin-bottom: 8px;
+    cursor: pointer;
+  }
+
+  .ort-runtime-option:hover {
+    border-color: #5a5250;
+  }
+
+  .ort-runtime-option input[type="radio"] {
+    margin-top: 3px;
+  }
+
+  .ort-runtime-info {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .ort-runtime-name {
+    font-size: 14px;
+  }
+
+  .ort-runtime-desc {
+    font-size: 12px;
+    color: var(--text-secondary);
+  }
+
+  .ort-progress {
+    margin-top: 12px;
+  }
+
+  .ort-progress-text {
+    font-size: 13px;
+    margin-bottom: 6px;
+    color: var(--text-secondary);
+  }
+
+  .ort-progress-bar {
+    height: 8px;
+    background: var(--bg-base);
+    border-radius: 4px;
+    overflow: hidden;
+  }
+
+  .ort-progress-fill {
+    height: 100%;
+    background: #5a8a5a;
+    transition: width 0.2s ease;
+  }
+
+  .ort-error {
+    margin-top: 12px;
+    padding: 10px;
+    background: rgba(90, 58, 58, 0.3);
+    border: 1px solid #6a4a4a;
+    border-radius: 6px;
+    color: #ff6b6b;
+    font-size: 13px;
+  }
+
+  .ort-restart-notice {
+    margin-top: 12px;
+    padding: 10px;
+    background: rgba(58, 90, 90, 0.3);
+    border: 1px solid #4a6a6a;
+    border-radius: 6px;
+    color: #6ac;
+    font-size: 13px;
   }
 </style>
