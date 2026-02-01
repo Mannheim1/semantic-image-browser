@@ -44,3 +44,6 @@ zip = "7.1"
 flate2 = "1.1"
 tar = "0.4"
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_System_LibraryLoader"] }
+
