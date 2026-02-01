@@ -19,6 +19,7 @@
     file_size: number;
     created_at: number;
     modified_at: number;
+    sort_score?: number | null;
   }
 
   interface SiglipConfigInfo {
@@ -255,6 +256,13 @@
     contextMenu = { x: e.clientX, y: e.clientY, image: img };
   }
 
+  function viewSimilarityScore(img: ImageInfo) {
+    if (img.sort_score === null || img.sort_score === undefined) {
+      return;
+    }
+    alert(`Sort score: ${img.sort_score.toFixed(4)}`);
+  }
+
   function closeContextMenu() {
     contextMenu = null;
   }
@@ -454,6 +462,14 @@
       </button>
       <button class="context-item" onclick={() => { showInFolder(contextMenu!.image.path); closeContextMenu(); }}>
         Show in folder
+      </button>
+      <button
+        class="context-item"
+        class:disabled={searchQuery.trim().length === 0}
+        disabled={searchQuery.trim().length === 0}
+        onclick={() => { viewSimilarityScore(contextMenu!.image); closeContextMenu(); }}
+      >
+        View similarity score
       </button>
       <button class="context-item disabled" disabled>
         Find similar
