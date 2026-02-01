@@ -467,6 +467,24 @@ async fn search_images(state: tauri::State<'_, AppState>, query: String) -> Resu
     }
 }
 
+/// Search for images similar to a given image by path.
+/// Uses the stored embedding from the database (does not re-compute).
+#[tauri::command]
+async fn search_similar_images(
+    state: tauri::State<'_, AppState>,
+    image_path: String,
+) -> Result<Vec<database::SearchResult>, String> {
+    let table = state.table.lock().await;
+
+    // Get the embedding for the source image
+    let embedding = database::get_image_embedding(&table, &image_path)
+        .await?
+        .ok_or_else(|| format!("Image has no embedding: {}", image_path))?;
+
+    // Search for similar images (return top 100)
+    database::search_by_embedding(&table, &embedding, 100).await
+}
+
 #[tauri::command]
 async fn open_image(app: AppHandle, path: String) -> Result<(), String> {
     app.opener()
@@ -807,6 +825,7 @@ pub fn run() {
             get_indexed_count,
             get_all_images,
             search_images,
+            search_similar_images,
             open_image,
             show_in_folder,
             delete_all_thumbnails,
