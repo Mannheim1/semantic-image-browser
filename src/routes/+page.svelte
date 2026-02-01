@@ -323,11 +323,11 @@
     contextMenu = { x: e.clientX, y: e.clientY, image: img };
   }
 
-  function viewSimilarityScore(img: ImageInfo) {
+  function viewDistanceScore(img: ImageInfo) {
     if (img.sort_score === null || img.sort_score === undefined) {
       return;
     }
-    alert(`Sort score: ${img.sort_score.toFixed(4)}`);
+    alert(`Distance: ${img.sort_score.toFixed(4)}`);
   }
 
   async function findSimilar(img: ImageInfo) {
@@ -645,7 +645,7 @@
             <div class="meta-row"><span>Created</span><span>{formatDate(selectedImage.created_at)}</span></div>
             <div class="meta-row"><span>Modified</span><span>{formatDate(selectedImage.modified_at)}</span></div>
             {#if selectedImage.sort_score !== null && selectedImage.sort_score !== undefined}
-              <div class="meta-row"><span>Similarity</span><span>{selectedImage.sort_score.toFixed(4)}</span></div>
+              <div class="meta-row"><span>Distance</span><span>{selectedImage.sort_score.toFixed(4)}</span></div>
             {/if}
           </div>
         </div>
@@ -666,9 +666,9 @@
         class="context-item"
         class:disabled={searchQuery.trim().length === 0}
         disabled={searchQuery.trim().length === 0}
-        onclick={() => { viewSimilarityScore(contextMenu!.image); closeContextMenu(); }}
+        onclick={() => { viewDistanceScore(contextMenu!.image); closeContextMenu(); }}
       >
-        View similarity score
+        View distance
       </button>
       <button
         class="context-item"

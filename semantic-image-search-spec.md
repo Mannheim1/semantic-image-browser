@@ -41,7 +41,7 @@ Connect all three search modes to UI, result source indicators, settings.
 ### Search Modes
 - Visual embedding search: matches query text against image content
 - OCR lexical search: keyword matching against extracted text (BM25)
-- OCR semantic search: embedding similarity against extracted text
+- OCR semantic search: embedding distance against extracted text
 
 Setting to control OCR behavior: disabled, lexical only, semantic only, or both.
 
@@ -77,13 +77,13 @@ Data location: OS standard app data directory (`app_local_data_dir`).
 Vision-language models (like CLIP, SigLIP) encode both images and text into vectors in a shared space. Similar concepts end up near each other regardless of whether they came from an image or text.
 
 - **Indexing**: Each image is encoded into a vector and stored. Embeddings are generated when the user adds a watched directory or clicks "Rescan All".
-- **Search**: The query text is encoded into a vector and compared against stored image vectors using cosine similarity.
+- **Search**: The query text is encoded into a vector and compared against stored image vectors using vector distance (LanceDB `_distance`).
 - **Fallback**: If the embedding model is not configured or fails, search falls back to filename matching.
 - **Constraint**: The same model must be used for both indexing and search. Embeddings from different models are incompatible (each model has its own vector space). The multi-slot schema allows storing embeddings from multiple models to enable switching without recalculation.
 
 ### Data Flow
 1. **Indexing**: Images scanned → thumbnails generated → embeddings stored in LanceDB
-2. **Search**: Query text encoded → vector similarity search in LanceDB
+2. **Search**: Query text encoded → vector distance search in LanceDB
 3. **Display**: Results return paths → thumbnails served from cache
 
 ### Indexing Flow
@@ -250,4 +250,4 @@ Text queries are tokenized using the HuggingFace tokenizer:
 
 ### Embedding Normalization
 
-Both image and text embeddings are L2-normalized before storage/comparison. This means cosine similarity equals dot product, simplifying the vector search.
+Both image and text embeddings are L2-normalized before storage/comparison, meaning distance is equivalent to cosine similarity. LanceDB returns `_distance` for vector search; lower values mean closer matches.
