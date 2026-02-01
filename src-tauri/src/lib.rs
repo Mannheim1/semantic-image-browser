@@ -539,7 +539,7 @@ async fn open_app_data_folder(app: AppHandle) -> Result<(), String> {
     }
 
     app.opener()
-        .reveal_item_in_dir(&app_data)
+        .open_path(app_data.to_string_lossy().to_string(), None::<&str>)
         .map_err(|e| e.to_string())
 }
 
