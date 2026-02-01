@@ -1202,17 +1202,32 @@
   }
 
   .panel-resizer {
-    width: 6px;
+    width: 12px;
     cursor: ew-resize;
-    background: var(--bg-toolbar);
-    border-left: 1px solid var(--border-color);
-    border-right: 1px solid var(--border-color);
+    background: transparent;
     align-self: stretch;
+    position: relative;
     z-index: 1;
+  }
+
+  .panel-resizer::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 50%;
+    width: 1px;
+    background: var(--border-color);
+    transform: translateX(-50%);
   }
 
   .panel-resizer:hover {
     background: var(--bg-hover);
+  }
+
+  .panel-resizer:hover::before {
+    background: #5a5250;
+    width: 3px;
   }
 
   .panel-header {
