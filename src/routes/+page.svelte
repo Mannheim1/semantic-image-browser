@@ -45,6 +45,7 @@
   interface OrtStatus {
     installed: boolean;
     library_path: string | null;
+    runtime_type: string | null;
     gpu_available: boolean;
     platform: string;
   }
@@ -463,7 +464,7 @@
             <div class="menu-section">
               <div class="menu-header">Runtime</div>
               <div class="menu-info">
-                ONNX Runtime: {ortStatus?.installed ? "✓ Installed" : "✗ Not installed"}
+                ONNX Runtime: {ortStatus?.installed ? `✓ ${ortStatus.runtime_type?.toUpperCase() ?? "Installed"}` : "✗ Not installed"}
               </div>
               <div class="menu-info">Embedding model: {embeddingModelLoaded ? "✓ Loaded" : "✗ Not configured"}</div>
               <button class="menu-btn" onclick={openOrtModal}>

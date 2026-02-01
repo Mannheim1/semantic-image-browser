@@ -392,6 +392,7 @@ fn move_dir_contents(src: &Path, dest: &Path) -> Result<(), String> {
 pub struct OrtStatus {
     pub installed: bool,
     pub library_path: Option<String>,
+    pub runtime_type: Option<String>,
     pub gpu_available: bool,
     pub platform: String,
 }
@@ -401,9 +402,14 @@ pub fn get_ort_status(app: &AppHandle) -> Result<OrtStatus, String> {
     let platform = Platform::detect().ok_or("Unsupported platform")?;
     let lib_path = get_ort_library_path(app)?;
 
+    // Get runtime type from config
+    let cfg = crate::config::load_config(app)?;
+    let runtime_type = cfg.runtime_type;
+
     Ok(OrtStatus {
         installed: lib_path.is_some(),
         library_path: lib_path.map(|p| p.to_string_lossy().to_string()),
+        runtime_type,
         gpu_available: platform.gpu_available(),
         platform: format!("{:?}", platform),
     })
