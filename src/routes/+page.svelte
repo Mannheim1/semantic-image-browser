@@ -68,6 +68,9 @@
   let embeddingModelLoaded = $state(false);
   let lastScanDurationMs = $state<number | null>(null);
   let scanProgress = $state<ScanProgressPayload | null>(null);
+  let isPanelOpen = $state(false);
+  let selectedIndex = $state<number | null>(null);
+  let selectedImage = $state<ImageInfo | null>(null);
 
   // ONNX Runtime state
   let ortStatus = $state<OrtStatus | null>(null);
@@ -117,6 +120,7 @@
   }
 
   async function search(query: string) {
+    closePanel();
     isLoading = true;
     try {
       images = await invoke("search_images", { query });
@@ -325,6 +329,7 @@
 
   async function findSimilar(img: ImageInfo) {
     isLoading = true;
+    closePanel();
     try {
       images = await invoke("search_similar_images", { imagePath: img.path });
       similarToImage = img;
@@ -344,6 +349,39 @@
 
   function closeContextMenu() {
     contextMenu = null;
+  }
+
+  function openPanelAtIndex(index: number) {
+    if (index < 0 || index >= images.length) return;
+    selectedIndex = index;
+    selectedImage = images[index];
+    isPanelOpen = true;
+  }
+
+  function closePanel() {
+    isPanelOpen = false;
+    selectedIndex = null;
+    selectedImage = null;
+  }
+
+  function handleImageClick(index: number) {
+    openPanelAtIndex(index);
+  }
+
+  function handleKeyDown(e: KeyboardEvent) {
+    if (!isPanelOpen || selectedIndex === null || images.length === 0) return;
+    const target = e.target as HTMLElement | null;
+    const tag = target?.tagName?.toLowerCase();
+    if (tag === "input" || tag === "textarea" || target?.isContentEditable) return;
+
+    if (e.key === "ArrowRight") {
+      e.preventDefault();
+      openPanelAtIndex(Math.min(selectedIndex + 1, images.length - 1));
+    }
+    if (e.key === "ArrowLeft") {
+      e.preventDefault();
+      openPanelAtIndex(Math.max(selectedIndex - 1, 0));
+    }
   }
 
   function handleWindowClick() {
@@ -379,6 +417,10 @@
     return `${minutes}m ${remainingSeconds}s`;
   }
 
+  function formatDate(timestampMs: number): string {
+    return new Date(timestampMs).toLocaleString();
+  }
+
   $effect(() => {
     loadInitialData();
   });
@@ -399,7 +441,7 @@
   });
 </script>
 
-<svelte:window onclick={handleWindowClick} />
+<svelte:window onclick={handleWindowClick} onkeydown={handleKeyDown} />
 
 <div class="app">
   <header class="toolbar">
@@ -514,36 +556,64 @@
     </div>
   </header>
 
-  <main class="grid-container">
-    {#if images.length === 0 && !isLoading}
-      <div class="empty-state">
-        {#if watchedDirectories.length === 0}
-          <p>No directories added. Click the gear icon to add a directory.</p>
-        {:else}
-          <p>No images found.</p>
-        {/if}
-      </div>
-    {:else}
-      <div class="image-grid">
-        {#each images as img}
-          <div
-            class="image-cell"
-            ondblclick={() => handleImageDblClick(img)}
-            oncontextmenu={(e) => handleContextMenu(e, img)}
-          >
-            {#if thumbnails[img.path]}
-              <img src={thumbnails[img.path]} alt="" class="thumbnail" />
-            {:else if thumbnails[img.path] === null}
-              <div class="thumbnail-placeholder">!</div>
-            {:else}
-              <div class="thumbnail-placeholder"></div>
-            {/if}
-            <span class="filename">{getFilename(img.path)}</span>
+  <div class="results-row">
+    <main class="grid-container">
+      {#if images.length === 0 && !isLoading}
+        <div class="empty-state">
+          {#if watchedDirectories.length === 0}
+            <p>No directories added. Click the gear icon to add a directory.</p>
+          {:else}
+            <p>No images found.</p>
+          {/if}
+        </div>
+      {:else}
+        <div class="image-grid">
+          {#each images as img, index}
+            <div
+              class="image-cell"
+              class:selected={selectedImage?.path === img.path}
+              onclick={() => handleImageClick(index)}
+              ondblclick={() => handleImageDblClick(img)}
+              oncontextmenu={(e) => handleContextMenu(e, img)}
+            >
+              {#if thumbnails[img.path]}
+                <img src={thumbnails[img.path]} alt="" class="thumbnail" />
+              {:else if thumbnails[img.path] === null}
+                <div class="thumbnail-placeholder">!</div>
+              {:else}
+                <div class="thumbnail-placeholder"></div>
+              {/if}
+              <span class="filename">{getFilename(img.path)}</span>
+            </div>
+          {/each}
+        </div>
+      {/if}
+    </main>
+
+    {#if isPanelOpen && selectedImage}
+      <aside class="image-panel">
+        <div class="panel-header">
+          <div class="panel-title" title={selectedImage.path}>{getFilename(selectedImage.path)}</div>
+          <button class="panel-close" onclick={closePanel}>Ã—</button>
+        </div>
+        <div class="panel-body">
+          <div class="panel-image-wrapper">
+            <img src={convertFileSrc(selectedImage.path)} alt="" class="panel-image" />
           </div>
-        {/each}
-      </div>
+          <div class="panel-meta">
+            <div class="meta-row"><span>Path</span><span>{selectedImage.path}</span></div>
+            <div class="meta-row"><span>Type</span><span>{selectedImage.file_type}</span></div>
+            <div class="meta-row"><span>Size</span><span>{formatBytes(selectedImage.file_size)}</span></div>
+            <div class="meta-row"><span>Created</span><span>{formatDate(selectedImage.created_at)}</span></div>
+            <div class="meta-row"><span>Modified</span><span>{formatDate(selectedImage.modified_at)}</span></div>
+            {#if selectedImage.sort_score !== null && selectedImage.sort_score !== undefined}
+              <div class="meta-row"><span>Similarity</span><span>{selectedImage.sort_score.toFixed(4)}</span></div>
+            {/if}
+          </div>
+        </div>
+      </aside>
     {/if}
-  </main>
+  </div>
 
   {#if contextMenu}
     <div
@@ -979,6 +1049,12 @@
     overflow-x: hidden;
   }
 
+  .results-row {
+    flex: 1;
+    display: flex;
+    min-height: 0;
+  }
+
   .empty-state {
     display: flex;
     align-items: center;
@@ -1003,6 +1079,12 @@
 
   .image-cell:hover {
     background: var(--bg-hover);
+  }
+
+  .image-cell.selected {
+    background: var(--bg-hover);
+    outline: 1px solid #5a5250;
+    outline-offset: -1px;
   }
 
   .thumbnail {
@@ -1065,6 +1147,94 @@
   .context-item.disabled {
     color: var(--text-secondary);
     cursor: not-allowed;
+  }
+
+  .image-panel {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    background: var(--bg-toolbar);
+    border-left: 1px solid var(--border-color);
+    min-width: 0;
+  }
+
+  .panel-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--border-color);
+  }
+
+  .panel-title {
+    font-size: 13px;
+    font-weight: 500;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .panel-close {
+    background: none;
+    border: none;
+    color: var(--text-secondary);
+    font-size: 18px;
+    cursor: pointer;
+    padding: 0 4px;
+  }
+
+  .panel-close:hover {
+    color: var(--text-primary);
+  }
+
+  .panel-body {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 10px 12px;
+    overflow: auto;
+  }
+
+  .panel-image-wrapper {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--bg-base);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    padding: 8px;
+    min-height: 200px;
+  }
+
+  .panel-image {
+    max-width: 100%;
+    max-height: 100%;
+    object-fit: contain;
+  }
+
+  .panel-meta {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    font-size: 12px;
+  }
+
+  .meta-row {
+    display: flex;
+    gap: 8px;
+  }
+
+  .meta-row span:first-child {
+    color: var(--text-secondary);
+    width: 70px;
+    flex-shrink: 0;
+  }
+
+  .meta-row span:last-child {
+    color: var(--text-primary);
+    word-break: break-all;
   }
 
   .modal-overlay {
