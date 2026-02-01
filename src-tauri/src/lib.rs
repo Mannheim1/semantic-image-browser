@@ -199,7 +199,19 @@ async fn add_watched_directory(app: AppHandle, state: tauri::State<'_, AppState>
 
     let thumb_dir = thumbnails_dir(&app, &cfg)?;
     let table = state.table.lock().await;
-    let (result, _) = scan_directory_internal(&table, &thumb_dir, &path).await?;
+
+    // Get model ID from config (the directory name is a reasonable identifier)
+    let model_id = cfg.model_dir.as_ref().and_then(|p| {
+        Path::new(p).file_name().and_then(|n| n.to_str()).map(|s| s.to_string())
+    });
+
+    let (result, _) = scan_directory_internal(
+        &table,
+        &thumb_dir,
+        &path,
+        state.embedding_model.as_ref(),
+        model_id.as_deref(),
+    ).await?;
     Ok(result)
 }
 
@@ -232,6 +244,11 @@ async fn rescan_all(app: AppHandle, state: tauri::State<'_, AppState>) -> Result
     let cfg = config::load_config(&app)?;
     let thumb_dir = thumbnails_dir(&app, &cfg)?;
 
+    // Get model ID from config (the directory name is a reasonable identifier)
+    let model_id = cfg.model_dir.as_ref().and_then(|p| {
+        Path::new(p).file_name().and_then(|n| n.to_str()).map(|s| s.to_string())
+    });
+
     let mut total_result = ScanResult {
         images_found: 0,
         images_added: 0,
@@ -244,7 +261,13 @@ async fn rescan_all(app: AppHandle, state: tauri::State<'_, AppState>) -> Result
     let mut all_seen_paths: HashSet<String> = HashSet::new();
 
     for dir in &cfg.watched_directories {
-        match scan_directory_internal(&table, &thumb_dir, dir).await {
+        match scan_directory_internal(
+            &table,
+            &thumb_dir,
+            dir,
+            state.embedding_model.as_ref(),
+            model_id.as_deref(),
+        ).await {
             Ok((result, seen_paths)) => {
                 total_result.images_found += result.images_found;
                 total_result.images_added += result.images_added;
@@ -305,11 +328,42 @@ async fn get_all_images(state: tauri::State<'_, AppState>) -> Result<Vec<ImageIn
     database::get_all_images(&table).await
 }
 
+/// Search for images using semantic similarity if the embedding model is available,
+/// otherwise fall back to filename search.
+///
+/// Note: Currently searches using embedding slot 1 only. The schema supports
+/// slots 2-5 to allow switching models without recalculating embeddings, but
+/// only slot 1 is used for search at this time.
 #[tauri::command]
 async fn search_images(state: tauri::State<'_, AppState>, query: String) -> Result<Vec<ImageInfo>, String> {
     let table = state.table.lock().await;
     if query.trim().is_empty() {
-        database::get_all_images(&table).await
+        return database::get_all_images(&table).await;
+    }
+
+    // Try to generate text embedding (must release mutex before await)
+    let query_embedding = if let Some(model) = &state.embedding_model {
+        match model.lock() {
+            Ok(mut m) => match m.embed_text(&query) {
+                Ok(emb) => Some(emb),
+                Err(e) => {
+                    eprintln!("Text embedding failed, falling back to filename search: {}", e);
+                    None
+                }
+            },
+            Err(e) => {
+                eprintln!("Failed to lock embedding model: {}", e);
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    // Use vector search if we have an embedding, otherwise fall back to filename search
+    if let Some(embedding) = query_embedding {
+        // Return top 100 results, user can scroll through them
+        database::search_by_embedding(&table, &embedding, 100).await
     } else {
         database::search_by_filename(&table, &query).await
     }
@@ -376,6 +430,8 @@ async fn scan_directory_internal(
     table: &lancedb::Table,
     thumb_dir: &Path,
     dir: &str,
+    embedding_model: Option<&Mutex<EmbeddingModel>>,
+    model_id: Option<&str>,
 ) -> Result<(ScanResult, HashSet<String>), String> {
     let dir_path = Path::new(dir);
     let files = tokio::task::spawn_blocking({
@@ -397,7 +453,7 @@ async fn scan_directory_internal(
 
     let mut seen_paths: HashSet<String> = HashSet::new();
     let mut to_upsert: Vec<ImageRecord> = Vec::new();
-    let mut paths_needing_thumbnails: Vec<String> = Vec::new();
+    let mut paths_needing_processing: Vec<(String, scanner::ScannedFile)> = Vec::new();
 
     for file in files {
         seen_paths.insert(file.path.clone());
@@ -420,31 +476,29 @@ async fn scan_directory_internal(
         };
 
         if needs_update {
-            paths_needing_thumbnails.push(file.path.clone());
-            to_upsert.push(ImageRecord {
-                path: file.path.clone(),
-                file_type: file.file_type,
-                file_size: file.file_size,
-                created_at: scanner::system_time_to_millis(file.created_at),
-                modified_at: file_modified_ms,
-            });
+            paths_needing_processing.push((file.path.clone(), file));
         }
     }
 
-    // Generate thumbnails for new/updated images in parallel
-    if !paths_needing_thumbnails.is_empty() {
+    // Generate thumbnails and embeddings for new/updated images
+    if !paths_needing_processing.is_empty() {
         let thumb_dir_clone = thumb_dir.to_path_buf();
+        let paths_for_thumbnails: Vec<String> = paths_needing_processing
+            .iter()
+            .map(|(p, _)| p.clone())
+            .collect();
+
+        // Generate thumbnails in parallel (existing logic)
         let thumbnail_errors = tokio::task::spawn_blocking(move || {
-            use std::sync::Mutex;
-            let errors = Mutex::new(Vec::new());
+            let errors = std::sync::Mutex::new(Vec::new());
 
             std::thread::scope(|s| {
                 let num_threads = std::thread::available_parallelism()
                     .map(|n| n.get())
                     .unwrap_or(4);
-                let chunk_size = (paths_needing_thumbnails.len() + num_threads - 1) / num_threads;
+                let chunk_size = (paths_for_thumbnails.len() + num_threads - 1) / num_threads;
 
-                for chunk in paths_needing_thumbnails.chunks(chunk_size) {
+                for chunk in paths_for_thumbnails.chunks(chunk_size) {
                     let errors = &errors;
                     let thumb_dir = &thumb_dir_clone;
                     s.spawn(move || {
@@ -464,6 +518,42 @@ async fn scan_directory_internal(
         .map_err(|e| e.to_string())?;
 
         result.errors.extend(thumbnail_errors);
+
+        // Generate embeddings (sequential for now - model requires &mut self)
+        // Note: Embedding generation is slower than thumbnails, but we keep it simple.
+        // Future optimization: batch inference or use a separate thread with message passing.
+        for (path, file) in paths_needing_processing {
+            let file_modified_ms = scanner::system_time_to_millis(file.modified_at);
+
+            let (embedding, emb_model_id) = if let Some(model) = embedding_model {
+                let image_path = Path::new(&path);
+                match model.lock() {
+                    Ok(mut m) => match m.embed_image(image_path) {
+                        Ok(emb) => (Some(emb), model_id.map(|s| s.to_string())),
+                        Err(e) => {
+                            result.errors.push(format!("Embedding error for {}: {}", path, e));
+                            (None, None)
+                        }
+                    },
+                    Err(e) => {
+                        result.errors.push(format!("Failed to lock embedding model: {}", e));
+                        (None, None)
+                    }
+                }
+            } else {
+                (None, None)
+            };
+
+            to_upsert.push(ImageRecord {
+                path,
+                file_type: file.file_type,
+                file_size: file.file_size,
+                created_at: scanner::system_time_to_millis(file.created_at),
+                modified_at: file_modified_ms,
+                visual_embedding: embedding,
+                model_id: emb_model_id,
+            });
+        }
     }
 
     if !to_upsert.is_empty() {

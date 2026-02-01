@@ -35,6 +35,12 @@ pub const TABLE_NAME: &str = "images";
 pub const VISUAL_EMBEDDING_DIM: i32 = 768; // SigLIP2-base pooler_output dimension
 pub const OCR_EMBEDDING_DIM: i32 = 384;
 
+/// Number of embedding model slots available.
+/// This allows storing embeddings from multiple models without schema changes.
+/// Currently only slot 1 is used for search, but others can be populated
+/// to allow switching models without recalculating embeddings.
+pub const NUM_EMBEDDING_SLOTS: usize = 5;
+
 /// Escapes a string value for safe use in LanceDB SQL predicates.
 ///
 /// LanceDB does not yet support parameterized queries (see lancedb/lancedb#1368).
@@ -66,6 +72,12 @@ pub struct ImageRecord {
     pub file_size: u64,
     pub created_at: i64,
     pub modified_at: i64,
+    /// Visual embedding for slot 1 (currently the only slot used for indexing/search).
+    /// Other slots (2-5) exist in the schema for future model switching support.
+    pub visual_embedding: Option<Vec<f32>>,
+    /// Model ID for slot 1 (e.g., "siglip2-base-patch16-256").
+    /// Used to identify which model generated the embedding.
+    pub model_id: Option<String>,
 }
 
 pub fn db_path(app: &AppHandle, _config: &AppConfig) -> Result<PathBuf, String> {
@@ -74,25 +86,11 @@ pub fn db_path(app: &AppHandle, _config: &AppConfig) -> Result<PathBuf, String> 
 }
 
 pub fn create_schema() -> Arc<Schema> {
-    Arc::new(Schema::new(vec![
+    // Schema supports 5 embedding model slots to allow switching models without
+    // recalculating all embeddings. Currently only slot 1 is used for search.
+    // Each slot has: model_id_N (string) and embedding_N (768-dim vector).
+    let mut fields = vec![
         Field::new("path", DataType::Utf8, false),
-        Field::new(
-            "visual_embedding",
-            DataType::FixedSizeList(
-                Arc::new(Field::new("item", DataType::Float32, true)),
-                VISUAL_EMBEDDING_DIM,
-            ),
-            true,
-        ),
-        Field::new("ocr_text", DataType::Utf8, true),
-        Field::new(
-            "ocr_embedding",
-            DataType::FixedSizeList(
-                Arc::new(Field::new("item", DataType::Float32, true)),
-                OCR_EMBEDDING_DIM,
-            ),
-            true,
-        ),
         Field::new("file_type", DataType::Utf8, false),
         Field::new("file_size", DataType::UInt64, false),
         Field::new(
@@ -105,7 +103,33 @@ pub fn create_schema() -> Arc<Schema> {
             DataType::Timestamp(TimeUnit::Millisecond, None),
             false,
         ),
-    ]))
+    ];
+
+    // Add 5 embedding slots (model_id + embedding pairs)
+    for i in 1..=NUM_EMBEDDING_SLOTS {
+        fields.push(Field::new(format!("model_id_{}", i), DataType::Utf8, true));
+        fields.push(Field::new(
+            format!("embedding_{}", i),
+            DataType::FixedSizeList(
+                Arc::new(Field::new("item", DataType::Float32, true)),
+                VISUAL_EMBEDDING_DIM,
+            ),
+            true,
+        ));
+    }
+
+    // OCR fields (unchanged)
+    fields.push(Field::new("ocr_text", DataType::Utf8, true));
+    fields.push(Field::new(
+        "ocr_embedding",
+        DataType::FixedSizeList(
+            Arc::new(Field::new("item", DataType::Float32, true)),
+            OCR_EMBEDDING_DIM,
+        ),
+        true,
+    ));
+
+    Arc::new(Schema::new(fields))
 }
 
 pub async fn open_connection(app: &AppHandle, config: &AppConfig) -> Result<Connection, String> {
@@ -148,6 +172,32 @@ fn create_null_embedding_array(dim: i32, len: usize) -> ArrayRef {
     Arc::new(builder.finish())
 }
 
+/// Create an embedding array from a list of optional embeddings.
+/// Each embedding is either Some(Vec<f32>) or None (null).
+fn create_embedding_array(dim: i32, embeddings: &[Option<&Vec<f32>>]) -> ArrayRef {
+    use arrow_array::builder::FixedSizeListBuilder;
+    use arrow_array::builder::Float32Builder;
+
+    let mut builder = FixedSizeListBuilder::new(Float32Builder::new(), dim);
+    for emb in embeddings {
+        match emb {
+            Some(values) => {
+                for &v in values.iter() {
+                    builder.values().append_value(v);
+                }
+                builder.append(true); // true = valid entry
+            }
+            None => {
+                for _ in 0..dim {
+                    builder.values().append_null();
+                }
+                builder.append(false); // false = null entry
+            }
+        }
+    }
+    Arc::new(builder.finish())
+}
+
 pub async fn upsert_images(table: &Table, records: Vec<ImageRecord>) -> Result<(), String> {
     if records.is_empty() {
         return Ok(());
@@ -160,22 +210,48 @@ pub async fn upsert_images(table: &Table, records: Vec<ImageRecord>) -> Result<(
     let created_ats: Vec<i64> = records.iter().map(|r| r.created_at).collect();
     let modified_ats: Vec<i64> = records.iter().map(|r| r.modified_at).collect();
 
+    // Slot 1 embeddings and model IDs (currently the only slot used)
+    let model_ids_1: Vec<Option<&str>> = records
+        .iter()
+        .map(|r| r.model_id.as_deref())
+        .collect();
+    let embeddings_1: Vec<Option<&Vec<f32>>> = records
+        .iter()
+        .map(|r| r.visual_embedding.as_ref())
+        .collect();
+
     let schema = create_schema();
 
-    let batch = RecordBatch::try_new(
-        schema.clone(),
-        vec![
-            Arc::new(StringArray::from(paths)) as ArrayRef,
-            create_null_embedding_array(VISUAL_EMBEDDING_DIM, len),
-            Arc::new(StringArray::from(vec![None::<&str>; len])) as ArrayRef,
-            create_null_embedding_array(OCR_EMBEDDING_DIM, len),
-            Arc::new(StringArray::from(file_types)) as ArrayRef,
-            Arc::new(UInt64Array::from(file_sizes)) as ArrayRef,
-            Arc::new(TimestampMillisecondArray::from(created_ats)) as ArrayRef,
-            Arc::new(TimestampMillisecondArray::from(modified_ats)) as ArrayRef,
-        ],
-    )
-    .map_err(|e| e.to_string())?;
+    // Build columns in schema order:
+    // path, file_type, file_size, created_at, modified_at,
+    // model_id_1, embedding_1, model_id_2, embedding_2, ... model_id_5, embedding_5,
+    // ocr_text, ocr_embedding
+    let mut columns: Vec<ArrayRef> = vec![
+        Arc::new(StringArray::from(paths)),
+        Arc::new(StringArray::from(file_types)),
+        Arc::new(UInt64Array::from(file_sizes)),
+        Arc::new(TimestampMillisecondArray::from(created_ats)),
+        Arc::new(TimestampMillisecondArray::from(modified_ats)),
+    ];
+
+    // Add embedding slots 1-5
+    // Slot 1 uses actual data; slots 2-5 are null (reserved for future model switching)
+    for slot in 1..=NUM_EMBEDDING_SLOTS {
+        if slot == 1 {
+            columns.push(Arc::new(StringArray::from(model_ids_1.clone())));
+            columns.push(create_embedding_array(VISUAL_EMBEDDING_DIM, &embeddings_1));
+        } else {
+            // Slots 2-5: null for now (reserved for future use)
+            columns.push(Arc::new(StringArray::from(vec![None::<&str>; len])));
+            columns.push(create_null_embedding_array(VISUAL_EMBEDDING_DIM, len));
+        }
+    }
+
+    // OCR fields (null for now)
+    columns.push(Arc::new(StringArray::from(vec![None::<&str>; len])));
+    columns.push(create_null_embedding_array(OCR_EMBEDDING_DIM, len));
+
+    let batch = RecordBatch::try_new(schema.clone(), columns).map_err(|e| e.to_string())?;
 
     let batches = RecordBatchIterator::new(vec![Ok(batch)], schema);
 
@@ -358,6 +434,43 @@ pub async fn search_by_filename(table: &Table, query: &str) -> Result<Vec<ImageI
     let batches: Vec<RecordBatch> = table
         .query()
         .only_if(format!("path LIKE '{}' ", pattern))
+        .select(lancedb::query::Select::Columns(vec![
+            "path".to_string(),
+            "file_type".to_string(),
+            "file_size".to_string(),
+            "created_at".to_string(),
+            "modified_at".to_string(),
+        ]))
+        .execute()
+        .await
+        .map_err(|e: lancedb::Error| e.to_string())?
+        .try_collect()
+        .await
+        .map_err(|e: lancedb::Error| e.to_string())?;
+
+    extract_images_from_batches(batches)
+}
+
+/// Search for images using vector similarity on embedding slot 1.
+/// Returns images ordered by similarity to the query embedding (most similar first).
+/// Only searches images that have an embedding in slot 1.
+///
+/// Note: Currently only slot 1 is used for search. Slots 2-5 exist in the schema
+/// to allow switching between models without recalculating embeddings, but
+/// searching those slots is not yet implemented.
+pub async fn search_by_embedding(
+    table: &Table,
+    query_embedding: &[f32],
+    limit: usize,
+) -> Result<Vec<ImageInfo>, String> {
+    use lancedb::query::QueryBase;
+
+    // Search using embedding_1 (slot 1) - the only slot currently used
+    let batches: Vec<RecordBatch> = table
+        .vector_search(query_embedding.to_vec())
+        .map_err(|e| format!("Failed to create vector search: {}", e))?
+        .column("embedding_1")
+        .limit(limit)
         .select(lancedb::query::Select::Columns(vec![
             "path".to_string(),
             "file_type".to_string(),
