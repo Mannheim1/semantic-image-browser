@@ -427,10 +427,22 @@ async fn get_all_images(state: tauri::State<'_, AppState>) -> Result<Vec<ImageIn
 /// slots 2-5 to allow switching models without recalculating embeddings, but
 /// only slot 1 is used for search at this time.
 #[tauri::command]
-async fn search_images(state: tauri::State<'_, AppState>, query: String) -> Result<Vec<ImageInfo>, String> {
+async fn search_images(state: tauri::State<'_, AppState>, query: String) -> Result<Vec<database::SearchResult>, String> {
     let table = state.table.lock().await;
     if query.trim().is_empty() {
-        return database::get_all_images(&table).await;
+        let images = database::get_all_images(&table).await?;
+        let results = images
+            .into_iter()
+            .map(|img| database::SearchResult {
+                path: img.path,
+                file_type: img.file_type,
+                file_size: img.file_size,
+                created_at: img.created_at,
+                modified_at: img.modified_at,
+                sort_score: None,
+            })
+            .collect();
+        return Ok(results);
     }
 
     // Try to generate text embedding using the pool

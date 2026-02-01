@@ -17,7 +17,7 @@
 //! native parameters instead of manual escaping.
 
 use arrow_array::{
-    Array, ArrayRef, RecordBatch, RecordBatchIterator, StringArray,
+    Array, ArrayRef, Float32Array, Float64Array, RecordBatch, RecordBatchIterator, StringArray,
     TimestampMillisecondArray, UInt64Array,
 };
 use std::collections::HashMap;
@@ -356,6 +356,16 @@ pub struct ImageInfo {
     pub modified_at: i64,
 }
 
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SearchResult {
+    pub path: String,
+    pub file_type: String,
+    pub file_size: u64,
+    pub created_at: i64,
+    pub modified_at: i64,
+    pub sort_score: Option<f32>,
+}
+
 pub async fn get_all_images(table: &Table) -> Result<Vec<ImageInfo>, String> {
     let batches: Vec<RecordBatch> = table
         .query()
@@ -400,7 +410,7 @@ pub async fn get_all_images(table: &Table) -> Result<Vec<ImageInfo>, String> {
     Ok(images)
 }
 
-fn extract_images_from_batches(batches: Vec<RecordBatch>) -> Result<Vec<ImageInfo>, String> {
+fn extract_search_results_from_batches(batches: Vec<RecordBatch>) -> Result<Vec<SearchResult>, String> {
     let mut images = Vec::new();
     for batch in batches {
         let path_col = batch.column_by_name("path").ok_or("path not found")?
@@ -413,21 +423,36 @@ fn extract_images_from_batches(batches: Vec<RecordBatch>) -> Result<Vec<ImageInf
             .as_any().downcast_ref::<TimestampMillisecondArray>().ok_or("created_at not ts")?;
         let modified_col = batch.column_by_name("modified_at").ok_or("modified_at not found")?
             .as_any().downcast_ref::<TimestampMillisecondArray>().ok_or("modified_at not ts")?;
+        let distance_col = batch.column_by_name("_distance");
 
         for i in 0..batch.num_rows() {
-            images.push(ImageInfo {
+            let sort_score = distance_col.and_then(|col| {
+                if col.is_null(i) {
+                    return None;
+                }
+                if let Some(col) = col.as_any().downcast_ref::<Float32Array>() {
+                    return Some(col.value(i));
+                }
+                if let Some(col) = col.as_any().downcast_ref::<Float64Array>() {
+                    return Some(col.value(i) as f32);
+                }
+                None
+            });
+
+            images.push(SearchResult {
                 path: path_col.value(i).to_string(),
                 file_type: file_type_col.value(i).to_string(),
                 file_size: file_size_col.value(i),
                 created_at: created_col.value(i),
                 modified_at: modified_col.value(i),
+                sort_score,
             });
         }
     }
     Ok(images)
 }
 
-pub async fn search_by_filename(table: &Table, query: &str) -> Result<Vec<ImageInfo>, String> {
+pub async fn search_by_filename(table: &Table, query: &str) -> Result<Vec<SearchResult>, String> {
     let escaped = escape_sql_string(query)?;
     let pattern = format!("%{}%", escaped);
 
@@ -448,7 +473,7 @@ pub async fn search_by_filename(table: &Table, query: &str) -> Result<Vec<ImageI
         .await
         .map_err(|e: lancedb::Error| e.to_string())?;
 
-    extract_images_from_batches(batches)
+    extract_search_results_from_batches(batches)
 }
 
 /// Search for images using vector similarity on embedding slot 1.
@@ -462,7 +487,7 @@ pub async fn search_by_embedding(
     table: &Table,
     query_embedding: &[f32],
     limit: usize,
-) -> Result<Vec<ImageInfo>, String> {
+) -> Result<Vec<SearchResult>, String> {
     use lancedb::query::QueryBase;
 
     // Search using embedding_1 (slot 1) - the only slot currently used
@@ -485,7 +510,7 @@ pub async fn search_by_embedding(
         .await
         .map_err(|e: lancedb::Error| e.to_string())?;
 
-    extract_images_from_batches(batches)
+    extract_search_results_from_batches(batches)
 }
 
 #[cfg(test)]
