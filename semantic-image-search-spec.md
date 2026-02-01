@@ -14,7 +14,9 @@ Search bar, thumbnail grid, context menus (with placeholder filename search).
 ### Phase 4: Visual Embedding Search
 SigLIP2 model integration for image-to-vector and text-to-vector.
 
-Note: model.safetensors checkpoint is at `C:\Dev\test\siglip2-base-patch16-naflex\model.safetensors`
+**Model**: SigLIP2-base-patch16-256 (768-dimensional embeddings)
+
+**ONNX Runtime**: Uses dynamic library loading (`load-dynamic` feature) to avoid CRT mismatch issues on Windows. The DLL path is configured at runtime.
 
 ### Phase 5: OCR Pipeline
 Tesseract integration, text extraction, storage.
@@ -74,9 +76,10 @@ Data location: OS standard app data directory (`app_local_data_dir`).
 ### How Embedding Search Works
 Vision-language models (like CLIP, SigLIP) encode both images and text into vectors in a shared space. Similar concepts end up near each other regardless of whether they came from an image or text.
 
-- **Indexing**: Each image is encoded into a vector and stored
-- **Search**: The query text is encoded into a vector and compared against stored image vectors
-- **Constraint**: The same model must be used for both indexing and search. Embeddings from different models are incompatible (each model has its own vector space).
+- **Indexing**: Each image is encoded into a vector and stored. Embeddings are generated when the user adds a watched directory or clicks "Rescan All".
+- **Search**: The query text is encoded into a vector and compared against stored image vectors using cosine similarity.
+- **Fallback**: If the embedding model is not configured or fails, search falls back to filename matching.
+- **Constraint**: The same model must be used for both indexing and search. Embeddings from different models are incompatible (each model has its own vector space). The multi-slot schema allows storing embeddings from multiple models to enable switching without recalculation.
 
 ### Data Flow
 1. **Indexing**: Images scanned → thumbnails generated → embeddings stored in LanceDB
@@ -96,16 +99,27 @@ Searches query the database only—no filesystem access at search time (except t
 Watched directories and app settings stored in a JSON file in the app data directory (separate from LanceDB).
 
 ### Database Schema (LanceDB/Arrow)
-- path: Utf8 (file path)
-- visual_embedding: FixedSizeList[Float32, N]
-- ocr_text: Utf8, nullable (FTS indexed)
-- ocr_embedding: FixedSizeList[Float32, M], nullable
+
+Core fields:
+- path: Utf8 (file path, primary key for upsert)
 - file_type: Utf8
 - file_size: UInt64
-- created_at: Timestamp
-- modified_at: Timestamp
+- created_at: Timestamp (milliseconds)
+- modified_at: Timestamp (milliseconds)
 
-Indexes: IVF-PQ on visual_embedding, IVF-PQ on ocr_embedding, FTS on ocr_text.
+Visual embedding slots (5 slots to support model switching without recalculation):
+- model_id_1: Utf8, nullable (identifies which model generated embedding_1)
+- embedding_1: FixedSizeList[Float32, 768], nullable (primary slot, used for search)
+- model_id_2 through model_id_5: Utf8, nullable (reserved for future use)
+- embedding_2 through embedding_5: FixedSizeList[Float32, 768], nullable (reserved)
+
+OCR fields:
+- ocr_text: Utf8, nullable (FTS indexed)
+- ocr_embedding: FixedSizeList[Float32, 384], nullable
+
+**Multi-slot design rationale**: The schema supports 5 embedding model slots to allow switching between models without losing previous embeddings. If you switch from ModelA to ModelB, the old ModelA embeddings remain in slot 1 while ModelB uses slot 2. Switching back is instant (no recalculation needed). Currently only slot 1 is used for indexing and search.
+
+Indexes: IVF-PQ on embedding_1, IVF-PQ on ocr_embedding, FTS on ocr_text.
 
 ### Thumbnail System
 
@@ -166,3 +180,74 @@ This approach avoids base64 encoding overhead (~33% size reduction), enables par
 
 ### Build Output
 Single Windows executable. ONNX model bundled. No Python, no background services, no console windows.
+
+---
+
+## Development Setup
+
+### ONNX Runtime
+
+ONNX Runtime must be loaded dynamically at runtime (not statically linked) to avoid CRT mismatch errors on Windows. Download and extract the appropriate runtime:
+
+**CPU-only:**
+```
+C:\Dev\onnxruntime-win-x64-1.23.2
+```
+
+**GPU (CUDA):**
+```
+C:\Dev\onnxruntime-win-x64-gpu-1.23.2
+```
+
+The path to `onnxruntime.dll` is configured in the app settings (`ort_dylib_path`).
+
+### SigLIP2 Models
+
+Models are stored locally. The app requires ONNX-exported versions:
+
+**SigLIP2-base-patch16-256 (ONNX exported, recommended):**
+```
+C:\Dev\test\siglip2-base-patch16-256-ONNX
+```
+Contains: `vision_model.onnx`, `text_model.onnx`, `tokenizer.json`, `config.json`
+
+**SigLIP2-base-patch16-naflex (original safetensors):**
+```
+C:\Dev\test\siglip2-base-patch16-naflex
+```
+
+**SigLIP2-base-patch16-naflex (ONNX exported):**
+```
+C:\Dev\test\siglip2-base-patch16-naflex-ONNX
+```
+
+The model directory is configured in app settings (`model_dir`). The app expects:
+- `vision_model.onnx` - Image encoder
+- `text_model.onnx` - Text encoder
+- `tokenizer.json` - HuggingFace tokenizer for text preprocessing
+
+### Model Export
+
+To export a SigLIP2 model to ONNX format, use the Optimum library:
+```bash
+optimum-cli export onnx --model google/siglip2-base-patch16-256 siglip2-base-patch16-256-ONNX
+```
+
+### Image Preprocessing
+
+Images are preprocessed before embedding:
+- Resize to 256×256 (model's expected input size)
+- Convert to RGB
+- Normalize to [-1, 1] range: `(pixel / 255.0) * 2.0 - 1.0`
+- Convert to NCHW format (batch, channels, height, width)
+
+### Text Preprocessing
+
+Text queries are tokenized using the HuggingFace tokenizer:
+- Max sequence length: 64 tokens
+- Padding: right-padded to max length
+- Truncation: enabled
+
+### Embedding Normalization
+
+Both image and text embeddings are L2-normalized before storage/comparison. This means cosine similarity equals dot product, simplifying the vector search.
