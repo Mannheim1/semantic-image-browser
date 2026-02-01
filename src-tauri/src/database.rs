@@ -44,13 +44,16 @@ pub const NUM_EMBEDDING_SLOTS: usize = 5;
 /// Escapes a string value for safe use in LanceDB SQL predicates.
 ///
 /// LanceDB does not yet support parameterized queries (see lancedb/lancedb#1368).
-/// This function provides comprehensive escaping for string values used in SQL
+/// This function provides escaping for string values used in SQL
 /// predicates like `only_if()` and `delete()`.
 ///
 /// Escaping rules:
 /// - Single quotes (') are doubled ('')
-/// - Backslashes (\) are doubled (\\)
 /// - Null bytes are rejected (not allowed in SQL strings)
+///
+/// Note: Backslashes are NOT escaped because LanceDB's SQL parser does not
+/// treat backslash as an escape character within string literals. This is
+/// important for Windows file paths which contain literal backslashes.
 ///
 /// This prevents SQL injection while we wait for native parameter support.
 fn escape_sql_string(s: &str) -> Result<String, String> {
@@ -60,8 +63,8 @@ fn escape_sql_string(s: &str) -> Result<String, String> {
         return Err("Path contains null byte".to_string());
     }
 
-    // Escape single quotes (SQL standard) and backslashes
-    let escaped = s.replace('\\', "\\\\").replace('\'', "''");
+    // Escape single quotes (SQL standard)
+    let escaped = s.replace('\'', "''");
 
     Ok(escaped)
 }
@@ -483,6 +486,55 @@ pub async fn search_by_filename(table: &Table, query: &str) -> Result<Vec<Search
 /// Note: Currently only slot 1 is used for search. Slots 2-5 exist in the schema
 /// to allow switching between models without recalculating embeddings, but
 /// searching those slots is not yet implemented.
+/// Get the embedding for a specific image by path.
+/// Returns None if the image doesn't exist or has no embedding.
+pub async fn get_image_embedding(table: &Table, path: &str) -> Result<Option<Vec<f32>>, String> {
+    use arrow_array::FixedSizeListArray;
+
+    let escaped = escape_sql_string(path)?;
+
+    let batches: Vec<RecordBatch> = table
+        .query()
+        .only_if(format!("path = '{}'", escaped))
+        .select(lancedb::query::Select::Columns(vec!["embedding_1".to_string()]))
+        .execute()
+        .await
+        .map_err(|e: lancedb::Error| e.to_string())?
+        .try_collect()
+        .await
+        .map_err(|e: lancedb::Error| e.to_string())?;
+
+    for batch in batches {
+        if batch.num_rows() == 0 {
+            continue;
+        }
+
+        let emb_col = batch
+            .column_by_name("embedding_1")
+            .ok_or("embedding_1 not found")?;
+
+        if emb_col.is_null(0) {
+            return Ok(None);
+        }
+
+        let list_array = emb_col
+            .as_any()
+            .downcast_ref::<FixedSizeListArray>()
+            .ok_or("embedding_1 is not a fixed size list")?;
+
+        let value_array = list_array.value(0);
+        let values = value_array
+            .as_any()
+            .downcast_ref::<Float32Array>()
+            .ok_or("embedding values are not f32")?;
+
+        let embedding: Vec<f32> = values.iter().filter_map(|v| v).collect();
+        return Ok(Some(embedding));
+    }
+
+    Ok(None)
+}
+
 pub async fn search_by_embedding(
     table: &Table,
     query_embedding: &[f32],
@@ -535,17 +587,19 @@ mod tests {
 
     #[test]
     fn test_escape_sql_string_backslash() {
+        // Backslashes are NOT escaped - LanceDB doesn't treat them as escape chars
         assert_eq!(
             escape_sql_string(r"C:\Users\test.jpg").unwrap(),
-            r"C:\\Users\\test.jpg"
+            r"C:\Users\test.jpg"
         );
     }
 
     #[test]
     fn test_escape_sql_string_both() {
+        // Only quotes are escaped, backslashes pass through
         assert_eq!(
             escape_sql_string(r"C:\User's\test.jpg").unwrap(),
-            r"C:\\User''s\\test.jpg"
+            r"C:\User''s\test.jpg"
         );
     }
 

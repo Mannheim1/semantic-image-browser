@@ -73,6 +73,9 @@
   // Context menu state
   let contextMenu = $state<{ x: number; y: number; image: ImageInfo } | null>(null);
 
+  // Similar search state - when set, we're showing results similar to this image
+  let similarToImage = $state<ImageInfo | null>(null);
+
   // Debounce timer
   let searchTimeout: ReturnType<typeof setTimeout> | null = null;
 
@@ -263,6 +266,25 @@
     alert(`Sort score: ${img.sort_score.toFixed(4)}`);
   }
 
+  async function findSimilar(img: ImageInfo) {
+    isLoading = true;
+    try {
+      images = await invoke("search_similar_images", { imagePath: img.path });
+      similarToImage = img;
+      await loadThumbnails(images);
+    } catch (e) {
+      console.error("Find similar failed:", e);
+      alert("Failed to find similar images: " + String(e));
+    }
+    isLoading = false;
+  }
+
+  function clearSimilarSearch() {
+    similarToImage = null;
+    searchQuery = "";
+    search("");
+  }
+
   function closeContextMenu() {
     contextMenu = null;
   }
@@ -323,8 +345,9 @@
       type="text"
       class="search-input"
       placeholder="Search images..."
-      value={searchQuery}
+      value={similarToImage ? `similar to: ${getFilename(similarToImage.path)}` : searchQuery}
       oninput={handleSearchInput}
+      onfocus={() => { if (similarToImage) clearSimilarSearch(); }}
     />
 
     <div class="toolbar-buttons">
@@ -471,7 +494,12 @@
       >
         View similarity score
       </button>
-      <button class="context-item disabled" disabled>
+      <button
+        class="context-item"
+        class:disabled={!embeddingModelLoaded}
+        disabled={!embeddingModelLoaded}
+        onclick={() => { findSimilar(contextMenu!.image); closeContextMenu(); }}
+      >
         Find similar
       </button>
     </div>
