@@ -561,20 +561,19 @@
 
 <div class="app">
   <header class="toolbar">
-    {#if isLoading && scanProgress && scanProgress.total > 0}
-      <div class="search-input scanning-status">
-        Scanning {scanProgress.current}/{scanProgress.total} images...
-      </div>
-    {:else}
+    <div class="search-wrapper">
       <input
         type="text"
         class="search-input"
-        placeholder="Search images..."
+        placeholder={isLoading && scanProgress && scanProgress.total > 0
+          ? `Scanning ${scanProgress.current}/${scanProgress.total} images...`
+          : `Search ${indexedCount} images...`}
         value={similarToImage ? `similar to: ${getFilename(similarToImage.path)}` : searchQuery}
         oninput={handleSearchInput}
         onfocus={() => { if (similarToImage) clearSimilarSearch(); }}
+        disabled={isLoading && scanProgress && scanProgress.total > 0}
       />
-    {/if}
+    </div>
 
     <div class="toolbar-buttons">
       <div class="dropdown">
@@ -614,7 +613,6 @@
             </div>
             <div class="menu-section">
               <div class="menu-header">Debug</div>
-              <div class="menu-info">Indexed: {indexedCount} images</div>
               <button class="menu-btn" onclick={deleteAllThumbnails}>Delete All Thumbnails</button>
               <button class="menu-btn" onclick={clearDatabase}>Clear Database</button>
               <button class="menu-btn" onclick={inspectSiglipConfig}>Inspect SigLIP Config</button>
@@ -989,7 +987,7 @@
   }
 
   .search-input {
-    flex: 1;
+    width: 100%;
     height: 34px;
     padding: 0 12px;
     background: var(--bg-base);
@@ -1001,6 +999,10 @@
     box-sizing: border-box;
   }
 
+  .search-wrapper {
+    flex: 1;
+  }
+
   .search-input:focus {
     border-color: #5a5250;
   }
@@ -1009,10 +1011,12 @@
     color: var(--text-secondary);
   }
 
-  .scanning-status {
-    display: flex;
-    align-items: center;
-    color: var(--text-secondary);
+  .search-input:disabled {
+    cursor: not-allowed;
+    opacity: 0.7;
+  }
+
+  .search-input:disabled::placeholder {
     font-style: italic;
   }
 
