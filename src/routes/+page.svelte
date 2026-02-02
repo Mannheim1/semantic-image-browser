@@ -1095,25 +1095,6 @@
     box-shadow: 0 4px 12px rgba(0,0,0,0.3);
   }
 
-  .dropdown-item {
-    display: block;
-    width: 100%;
-    padding: 8px 12px;
-    background: none;
-    border: none;
-    color: var(--text-primary);
-    text-align: left;
-    cursor: pointer;
-    font-size: 13px;
-  }
-
-  .dropdown-item:hover {
-    background: var(--bg-hover);
-  }
-
-  .dropdown-item.active {
-    background: var(--bg-base);
-  }
 
   .settings-menu {
     min-width: 280px;
@@ -1136,12 +1117,6 @@
     margin-bottom: 8px;
   }
 
-  .menu-empty {
-    color: var(--text-secondary);
-    font-style: italic;
-    font-size: 13px;
-    margin-bottom: 8px;
-  }
 
   .menu-info {
     color: var(--text-secondary);
@@ -1170,34 +1145,6 @@
     cursor: not-allowed;
   }
 
-  .dir-item {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 4px 0;
-  }
-
-  .dir-path {
-    flex: 1;
-    font-size: 12px;
-    font-family: monospace;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .dir-remove {
-    background: none;
-    border: none;
-    color: var(--text-secondary);
-    cursor: pointer;
-    font-size: 16px;
-    padding: 0 4px;
-  }
-
-  .dir-remove:hover {
-    color: #ff6b6b;
-  }
 
   .grid-container {
     overflow-y: auto;
