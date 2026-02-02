@@ -38,6 +38,7 @@
   }
 
   interface ScanProgressPayload {
+    phase: string;
     current: number;
     total: number;
   }
@@ -59,6 +60,7 @@
   let images = $state<ImageInfo[]>([]);
   let thumbnails = $state<Record<string, string | null>>({});
   let isLoading = $state(false);
+  let isScanning = $state(false);
   let watchedDirectories = $state<string[]>([]);
   let indexedCount = $state(0);
   let siglipInfo = $state<SiglipConfigInfo | null>(null);
@@ -233,14 +235,15 @@
     });
 
     if (selected) {
-      isLoading = true;
-      scanProgress = { current: 0, total: 0 };
+      isScanning = true;
+      scanProgress = { phase: "thumbnails", current: 0, total: 0 };
       const start = performance.now();
       await invoke("add_watched_directory", { path: selected });
       lastScanDurationMs = performance.now() - start;
       console.log(`Scan completed in ${formatDuration(lastScanDurationMs)}`);
+      scanProgress = null;
+      isScanning = false;
       await loadInitialData();
-      isLoading = false;
     }
   }
 
@@ -250,14 +253,15 @@
   }
 
   async function rescanAll() {
-    isLoading = true;
-    scanProgress = { current: 0, total: 0 };
+    isScanning = true;
+    scanProgress = { phase: "thumbnails", current: 0, total: 0 };
     const start = performance.now();
     await invoke("rescan_all");
     lastScanDurationMs = performance.now() - start;
     console.log(`Scan completed in ${formatDuration(lastScanDurationMs)}`);
+    scanProgress = null;
+    isScanning = false;
     await loadInitialData();
-    isLoading = false;
   }
 
   async function openImage(path: string) {
@@ -576,13 +580,15 @@
       <input
         type="text"
         class="search-input"
-        placeholder={isLoading && scanProgress && scanProgress.total > 0
-          ? `Scanning ${scanProgress.current}/${scanProgress.total} images...`
+        placeholder={isScanning && scanProgress && scanProgress.total > 0
+          ? (scanProgress.phase === "thumbnails"
+            ? `Creating ${scanProgress.current}/${scanProgress.total} thumbnails...`
+            : `Scanning ${scanProgress.current}/${scanProgress.total} images...`)
           : `Search ${indexedCount} images...`}
         value={similarToImage ? `similar to: ${getFilename(similarToImage.path)}` : searchQuery}
         oninput={handleSearchInput}
         onfocus={() => { if (similarToImage) clearSimilarSearch(); }}
-        disabled={isLoading && scanProgress && scanProgress.total > 0}
+        disabled={isScanning}
       />
     </div>
 
