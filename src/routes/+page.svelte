@@ -83,6 +83,13 @@
   // Track if any sort is active (for filtered search)
   let hasActiveFilters = $derived(sortField !== "relevance");
 
+  // Hide the search value during scanning/loading so placeholder can show progress
+  let displaySearchValue = $derived(
+    isScanning || modelLoading
+      ? ""
+      : (similarToImage ? `similar to: ${getFilename(similarToImage.path)}` : searchQuery)
+  );
+
   // Context menu state
   let contextMenu = $state<{ x: number; y: number; image: ImageInfo } | null>(null);
 
@@ -498,7 +505,7 @@
               ? `Creating ${scanProgress.current}/${scanProgress.total} thumbnails...`
               : `Scanning ${scanProgress.current}/${scanProgress.total} images...`)
             : `Search ${indexedCount} images...`}
-        value={similarToImage ? `similar to: ${getFilename(similarToImage.path)}` : searchQuery}
+        value={displaySearchValue}
         oninput={handleSearchInput}
         onfocus={() => { if (similarToImage) clearSimilarSearch(); }}
         disabled={isScanning || modelLoading}
