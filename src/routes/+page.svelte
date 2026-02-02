@@ -1019,6 +1019,8 @@
     --source-visual: #1a1412;
     --source-ocr-lexical: #1a2e1a;
     --source-ocr-semantic: #1a1a2e;
+    --scrollbar-thumb: #6a615c;
+    --scrollbar-thumb-hover: #8a7c6a;
   }
 
   :global(body) {
@@ -1032,11 +1034,20 @@
   }
 
   :global(*) {
-    scrollbar-color: var(--bg-toolbar) var(--bg-base);
+    scrollbar-color: var(--scrollbar-thumb) var(--bg-base);
   }
 
   :global(*::-webkit-scrollbar-track) {
     background: var(--bg-base);
+  }
+
+  :global(*::-webkit-scrollbar-thumb) {
+    background: var(--scrollbar-thumb);
+    border-radius: 8px;
+  }
+
+  :global(*::-webkit-scrollbar-thumb:hover) {
+    background: var(--scrollbar-thumb-hover);
   }
 
   .app {
