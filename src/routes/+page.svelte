@@ -143,10 +143,10 @@
       file_types: [],
       min_size: null,
       max_size: null,
-      min_created: filterDateFrom ? new Date(filterDateFrom).getTime() : null,
-      max_created: filterDateTo ? new Date(filterDateTo + "T23:59:59").getTime() : null,
-      min_modified: null,
-      max_modified: null,
+      min_created: null,
+      max_created: null,
+      min_modified: filterDateFrom ? new Date(filterDateFrom).getTime() : null,
+      max_modified: filterDateTo ? new Date(filterDateTo + "T23:59:59").getTime() : null,
     };
   }
 
@@ -606,7 +606,7 @@
             </div>
 
             <div class="menu-section">
-              <div class="menu-header">Date Created</div>
+              <div class="menu-header">Date Modified</div>
               <div class="date-filters">
                 <label class="filter-label">
                   <span>From</span>
