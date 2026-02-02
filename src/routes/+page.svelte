@@ -1031,6 +1031,14 @@
     overflow: hidden;
   }
 
+  :global(*) {
+    scrollbar-color: var(--bg-toolbar) var(--bg-base);
+  }
+
+  :global(*::-webkit-scrollbar-track) {
+    background: var(--bg-base);
+  }
+
   .app {
     display: flex;
     flex-direction: column;
