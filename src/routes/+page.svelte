@@ -946,13 +946,6 @@
             </div>
           {/if}
         </div>
-        <div class="modal-footer">
-          <div class="modal-buttons">
-            <button class="modal-btn" onclick={() => showFoldersModal = false}>
-              Close
-            </button>
-          </div>
-        </div>
       </div>
     </div>
   {/if}
