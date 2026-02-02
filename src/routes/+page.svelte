@@ -1218,46 +1218,12 @@
     gap: 12px;
   }
 
-  .modal-label {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-    font-size: 12px;
-    color: var(--text-secondary);
-  }
-
-  .modal-input {
-    padding: 8px 10px;
-    background: var(--bg-base);
-    border: 1px solid var(--border-color);
-    border-radius: 4px;
-    color: var(--text-primary);
-    font-size: 13px;
-    font-family: monospace;
-  }
-
-  .modal-input:focus {
-    outline: none;
-    border-color: #5a5250;
-  }
-
   .modal-footer {
     padding: 12px 16px;
     border-top: 1px solid var(--border-color);
     display: flex;
     flex-direction: column;
     gap: 8px;
-  }
-
-  .modal-result {
-    font-size: 12px;
-    padding: 8px;
-    background: var(--bg-base);
-    border-radius: 4px;
-  }
-
-  .result-error {
-    color: #ff6b6b;
   }
 
   .modal-buttons {
