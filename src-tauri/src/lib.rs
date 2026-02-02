@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::sync::Mutex;
-use tauri::menu::{MenuBuilder, MenuItemBuilder, PredefinedMenuItem, SubmenuBuilder};
+use tauri::menu::{CheckMenuItemBuilder, MenuBuilder, MenuItemBuilder, PredefinedMenuItem, SubmenuBuilder};
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_opener::OpenerExt;
 
@@ -864,6 +864,8 @@ pub fn run() {
                 .item(&MenuItemBuilder::new("&Add Folder...").id("add_folder").accelerator("CmdOrCtrl+O").build(app)?)
                 .item(&MenuItemBuilder::new("&Rescan All").id("rescan").accelerator("CmdOrCtrl+R").build(app)?)
                 .separator()
+                .item(&MenuItemBuilder::new("&View Files").id("view_files").build(app)?)
+                .separator()
                 .item(&PredefinedMenuItem::quit(app, None)?)
                 .build()?;
 
@@ -877,12 +879,22 @@ pub fn run() {
                 .item(&PredefinedMenuItem::select_all(app, None)?)
                 .build()?;
 
+            let search_menu = SubmenuBuilder::new(app, "&Search")
+                .item(&CheckMenuItemBuilder::new("&Lexical OCR").id("ocr_lexical").build(app)?)
+                .item(&CheckMenuItemBuilder::new("&Semantic OCR").id("ocr_semantic").build(app)?)
+                .build()?;
+
             let view_menu = SubmenuBuilder::new(app, "&View")
-                .item(&MenuItemBuilder::new("Zoom &In").id("zoom_in").accelerator("CmdOrCtrl+=").build(app)?)
-                .item(&MenuItemBuilder::new("Zoom &Out").id("zoom_out").accelerator("CmdOrCtrl+-").build(app)?)
-                .item(&MenuItemBuilder::new("&Reset Zoom").id("zoom_reset").accelerator("CmdOrCtrl+0").build(app)?)
+                .item(&MenuItemBuilder::new("&Relevance").id("sort_relevance").build(app)?)
                 .separator()
-                .item(&PredefinedMenuItem::fullscreen(app, None)?)
+                .item(&MenuItemBuilder::new("Date &Created \u{2191}").id("sort_created_asc").build(app)?)
+                .item(&MenuItemBuilder::new("Date C&reated \u{2193}").id("sort_created_desc").build(app)?)
+                .separator()
+                .item(&MenuItemBuilder::new("Date &Modified \u{2191}").id("sort_modified_asc").build(app)?)
+                .item(&MenuItemBuilder::new("Date Mo&dified \u{2193}").id("sort_modified_desc").build(app)?)
+                .separator()
+                .item(&MenuItemBuilder::new("File &Size \u{2191}").id("sort_size_asc").build(app)?)
+                .item(&MenuItemBuilder::new("File Si&ze \u{2193}").id("sort_size_desc").build(app)?)
                 .build()?;
 
             let help_menu = SubmenuBuilder::new(app, "&Help")
@@ -890,7 +902,7 @@ pub fn run() {
                 .build()?;
 
             let menu = MenuBuilder::new(app)
-                .items(&[&file_menu, &edit_menu, &view_menu, &help_menu])
+                .items(&[&file_menu, &edit_menu, &search_menu, &view_menu, &help_menu])
                 .build()?;
 
             app.set_menu(menu)?;
