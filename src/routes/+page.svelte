@@ -940,9 +940,6 @@
               {/each}
             </div>
           {/if}
-          {#if lastScanDurationMs !== null}
-            <div class="folders-info">Last scan: {formatDuration(lastScanDurationMs)}</div>
-          {/if}
         </div>
         <div class="modal-footer">
           <div class="modal-buttons">
@@ -1751,12 +1748,6 @@
 
   .folder-remove:hover {
     color: #ff6b6b;
-  }
-
-  .folders-info {
-    margin-top: 12px;
-    color: var(--text-secondary);
-    font-size: 13px;
   }
 
 </style>
