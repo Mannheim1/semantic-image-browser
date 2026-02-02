@@ -876,6 +876,8 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
+            let cfg = config::load_config(app.handle())?;
+
             // Build the menu bar
             // Use & before a letter to create a mnemonic (Alt+letter shortcut on Windows)
             let file_menu = SubmenuBuilder::new(app, "&File")
@@ -923,9 +925,18 @@ pub fn run() {
                 .item(&MenuItemBuilder::new("&About").id("about").build(app)?)
                 .build()?;
 
-            let menu = MenuBuilder::new(app)
-                .items(&[&file_menu, &edit_menu, &search_menu, &view_menu, &help_menu])
-                .build()?;
+            let menu = if cfg.debug_mode {
+                let debug_menu = SubmenuBuilder::new(app, "&Debug")
+                    .item(&MenuItemBuilder::new("Debug mode enabled").id("debug_mode_enabled").build(app)?)
+                    .build()?;
+                MenuBuilder::new(app)
+                    .items(&[&file_menu, &edit_menu, &search_menu, &view_menu, &help_menu, &debug_menu])
+                    .build()?
+            } else {
+                MenuBuilder::new(app)
+                    .items(&[&file_menu, &edit_menu, &search_menu, &view_menu, &help_menu])
+                    .build()?
+            };
 
             app.set_menu(menu)?;
 
@@ -936,7 +947,6 @@ pub fn run() {
 
             let handle = app.handle().clone();
             tauri::async_runtime::block_on(async {
-                let cfg = config::load_config(&handle)?;
                 let db = database::open_connection(&handle, &cfg).await?;
                 let table = database::get_or_create_table(&db).await?;
 

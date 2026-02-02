@@ -13,6 +13,9 @@ pub struct AppConfig {
     pub ort_dylib_path: Option<String>,
     /// Path to the SigLIP2 ONNX model directory
     pub model_dir: Option<String>,
+    /// Enables debug-only UI (menu item at startup).
+    #[serde(default)]
+    pub debug_mode: bool,
 }
 
 pub fn config_path(app: &AppHandle) -> Result<PathBuf, String> {
