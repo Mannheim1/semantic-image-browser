@@ -3,7 +3,7 @@
   import { convertFileSrc } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
   import { open } from "@tauri-apps/plugin-dialog";
-  import { onMount } from "svelte";
+  import { onMount, tick } from "svelte";
 
   interface ScanResult {
     images_found: number;
@@ -75,6 +75,7 @@
   let isResizingPanel = $state(false);
   let resultsRowEl: HTMLDivElement | null = null;
   let gridContainerEl: HTMLElement | null = null;
+  let imageCellEls = $state<(HTMLDivElement | null)[]>([]);
 
   // ONNX Runtime state
   let ortStatus = $state<OrtStatus | null>(null);
@@ -400,7 +401,7 @@
     contextMenu = null;
   }
 
-  function openPanelAtIndex(index: number) {
+  async function openPanelAtIndex(index: number) {
     if (index < 0 || index >= images.length) return;
     if (panelWidthPct === null) {
       panelWidthPct = 50;
@@ -408,6 +409,8 @@
     selectedIndex = index;
     selectedImage = images[index];
     isPanelOpen = true;
+    await tick();
+    imageCellEls[index]?.scrollIntoView({ block: "center", inline: "nearest" });
   }
 
   function closePanel() {
@@ -747,6 +750,7 @@
               onclick={() => handleImageClick(index)}
               ondblclick={() => handleImageDblClick(img)}
               oncontextmenu={(e) => handleContextMenu(e, img)}
+              bind:this={imageCellEls[index]}
             >
               {#if thumbnails[img.path]}
                 <img src={thumbnails[img.path]} alt="" class="thumbnail" />
