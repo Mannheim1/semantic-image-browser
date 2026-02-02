@@ -271,7 +271,6 @@
   async function deleteAllThumbnails() {
     await invoke("delete_all_thumbnails");
     thumbnails = {};
-    await loadInitialData();
   }
 
   async function clearDatabase() {
