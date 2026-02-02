@@ -96,7 +96,22 @@
   // Settings menu state
   let showSettingsMenu = $state(false);
   let showOcrMenu = $state(false);
+  let showFilterMenu = $state(false);
   let ocrMode = $state<"disabled" | "lexical" | "semantic" | "both">("disabled");
+
+  // Filter & Sort state
+  type SortField = "relevance" | "created_at" | "modified_at" | "file_size";
+  let sortField = $state<SortField>("relevance");
+  let sortAscending = $state(true);
+  let filterDateFrom = $state<string>("");
+  let filterDateTo = $state<string>("");
+
+  // Track if any filter is active
+  let hasActiveFilters = $derived(
+    filterDateFrom !== "" ||
+    filterDateTo !== "" ||
+    sortField !== "relevance"
+  );
 
   // Context menu state
   let contextMenu = $state<{ x: number; y: number; image: ImageInfo } | null>(null);
@@ -123,12 +138,40 @@
     thumbnails = newThumbnails;
   }
 
+  function buildFilterOptions() {
+    return {
+      file_types: [],
+      min_size: null,
+      max_size: null,
+      min_created: filterDateFrom ? new Date(filterDateFrom).getTime() : null,
+      max_created: filterDateTo ? new Date(filterDateTo + "T23:59:59").getTime() : null,
+      min_modified: null,
+      max_modified: null,
+    };
+  }
+
+  function buildSortOptions() {
+    return {
+      field: sortField,
+      ascending: sortAscending,
+    };
+  }
+
   async function search(query: string) {
     closePanel();
     gridContainerEl?.scrollTo({ top: 0, behavior: "auto" });
     isLoading = true;
     try {
-      images = await invoke("search_images", { query });
+      // Use filtered search if any filters are active, otherwise use simple search
+      if (hasActiveFilters) {
+        images = await invoke("search_images_filtered", {
+          query,
+          filter: buildFilterOptions(),
+          sort: buildSortOptions(),
+        });
+      } else {
+        images = await invoke("search_images", { query });
+      }
       await loadThumbnails(images);
     } catch (e) {
       console.error("Search failed:", e);
@@ -418,6 +461,35 @@
     closeContextMenu();
     showSettingsMenu = false;
     showOcrMenu = false;
+    showFilterMenu = false;
+  }
+
+  function clearFilters() {
+    filterDateFrom = "";
+    filterDateTo = "";
+    sortField = "relevance";
+    sortAscending = true;
+    search(searchQuery);
+  }
+
+  function setSortField(field: SortField) {
+    sortField = field;
+    search(searchQuery);
+  }
+
+  function setSortDirection(ascending: boolean) {
+    sortAscending = ascending;
+    search(searchQuery);
+  }
+
+  function setDateFrom(value: string) {
+    filterDateFrom = value;
+    search(searchQuery);
+  }
+
+  function setDateTo(value: string) {
+    filterDateTo = value;
+    search(searchQuery);
   }
 
   function getFilename(path: string): string {
@@ -493,7 +565,7 @@
       <div class="dropdown">
         <button
           class="toolbar-btn"
-          onclick={(e) => { e.stopPropagation(); showOcrMenu = !showOcrMenu; showSettingsMenu = false; }}
+          onclick={(e) => { e.stopPropagation(); showOcrMenu = !showOcrMenu; showSettingsMenu = false; showFilterMenu = false; }}
         >
           OCR: {ocrMode}
         </button>
@@ -509,8 +581,67 @@
 
       <div class="dropdown">
         <button
+          class="toolbar-btn"
+          class:has-filters={hasActiveFilters}
+          onclick={(e) => { e.stopPropagation(); showFilterMenu = !showFilterMenu; showOcrMenu = false; showSettingsMenu = false; }}
+        >
+          Sort/Filter{hasActiveFilters ? " *" : ""}
+        </button>
+        {#if showFilterMenu}
+          <div class="dropdown-menu filter-menu" onclick={(e) => e.stopPropagation()}>
+            <div class="menu-section">
+              <div class="menu-header">Sort By</div>
+              <div class="sort-options">
+                <button class="dropdown-item" class:active={sortField === "relevance"} onclick={() => setSortField("relevance")}>Relevance</button>
+                <button class="dropdown-item" class:active={sortField === "created_at"} onclick={() => setSortField("created_at")}>Date Created</button>
+                <button class="dropdown-item" class:active={sortField === "modified_at"} onclick={() => setSortField("modified_at")}>Date Modified</button>
+                <button class="dropdown-item" class:active={sortField === "file_size"} onclick={() => setSortField("file_size")}>File Size</button>
+              </div>
+              {#if sortField !== "relevance"}
+                <div class="sort-direction">
+                  <button class="dropdown-item" class:active={sortAscending} onclick={() => setSortDirection(true)}>Ascending</button>
+                  <button class="dropdown-item" class:active={!sortAscending} onclick={() => setSortDirection(false)}>Descending</button>
+                </div>
+              {/if}
+            </div>
+
+            <div class="menu-section">
+              <div class="menu-header">Date Created</div>
+              <div class="date-filters">
+                <label class="filter-label">
+                  <span>From</span>
+                  <input
+                    type="date"
+                    class="filter-input"
+                    value={filterDateFrom}
+                    onchange={(e) => setDateFrom((e.target as HTMLInputElement).value)}
+                  />
+                </label>
+                <label class="filter-label">
+                  <span>To</span>
+                  <input
+                    type="date"
+                    class="filter-input"
+                    value={filterDateTo}
+                    onchange={(e) => setDateTo((e.target as HTMLInputElement).value)}
+                  />
+                </label>
+              </div>
+            </div>
+
+            {#if hasActiveFilters}
+              <div class="menu-section">
+                <button class="menu-btn" onclick={clearFilters}>Clear All</button>
+              </div>
+            {/if}
+          </div>
+        {/if}
+      </div>
+
+      <div class="dropdown">
+        <button
           class="toolbar-btn gear-btn"
-          onclick={(e) => { e.stopPropagation(); showSettingsMenu = !showSettingsMenu; showOcrMenu = false; }}
+          onclick={(e) => { e.stopPropagation(); showSettingsMenu = !showSettingsMenu; showOcrMenu = false; showFilterMenu = false; }}
         >
           &#9881;
         </button>
@@ -1589,5 +1720,63 @@
     border-radius: 6px;
     color: #6ac;
     font-size: 13px;
+  }
+
+  /* Filter Menu Styles */
+  .toolbar-btn.has-filters {
+    background: rgba(58, 90, 58, 0.3);
+    border-color: #4a6a4a;
+  }
+
+  .filter-menu {
+    min-width: 200px;
+    padding: 8px 0;
+  }
+
+  .sort-options {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .sort-direction {
+    margin-top: 4px;
+    padding-top: 4px;
+    border-top: 1px solid var(--border-color);
+    display: flex;
+    flex-direction: column;
+  }
+
+  .date-filters {
+    display: flex;
+    gap: 8px;
+  }
+
+  .filter-label {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    flex: 1;
+    font-size: 12px;
+    color: var(--text-secondary);
+  }
+
+  .filter-input {
+    padding: 6px 8px;
+    background: var(--bg-base);
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    color: var(--text-primary);
+    font-size: 12px;
+    width: 100%;
+    box-sizing: border-box;
+  }
+
+  .filter-input:focus {
+    outline: none;
+    border-color: #5a5250;
+  }
+
+  .filter-input::-webkit-calendar-picker-indicator {
+    filter: invert(0.7);
   }
 </style>

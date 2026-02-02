@@ -16,7 +16,7 @@ mod scanner;
 mod thumbnail;
 
 use config::AppConfig;
-use database::{ImageInfo, ImageRecord};
+use database::{FilterOptions, ImageInfo, ImageRecord, SortOptions};
 use embedding::EmbeddingModel;
 
 /// Maximum number of embedding model instances to keep in the pool.
@@ -488,6 +488,50 @@ async fn search_similar_images(
     database::search_by_embedding(&table, &embedding, 100).await
 }
 
+/// Search for images with filter and sort options.
+#[tauri::command]
+async fn search_images_filtered(
+    state: tauri::State<'_, AppState>,
+    query: String,
+    filter: FilterOptions,
+    sort: SortOptions,
+) -> Result<Vec<database::SearchResult>, String> {
+    let table = state.table.lock().await;
+
+    // Generate text embedding for the query if available
+    let query_embedding = if !query.trim().is_empty() {
+        if let Some(pool) = &state.embedding_pool {
+            match pool.embed_text(&query) {
+                Ok(emb) => Some(emb),
+                Err(e) => {
+                    eprintln!("Text embedding failed: {}", e);
+                    None
+                }
+            }
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    database::search_filtered(
+        &table,
+        query_embedding.as_deref(),
+        &filter,
+        &sort,
+        100,
+    )
+    .await
+}
+
+/// Get all distinct file types in the database.
+#[tauri::command]
+async fn get_file_types(state: tauri::State<'_, AppState>) -> Result<Vec<String>, String> {
+    let table = state.table.lock().await;
+    database::get_file_types(&table).await
+}
+
 #[tauri::command]
 async fn open_image(app: AppHandle, path: String) -> Result<(), String> {
     app.opener()
@@ -919,6 +963,8 @@ pub fn run() {
             get_all_images,
             search_images,
             search_similar_images,
+            search_images_filtered,
+            get_file_types,
             open_image,
             show_in_folder,
             delete_all_thumbnails,
