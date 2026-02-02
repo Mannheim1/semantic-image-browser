@@ -370,6 +370,100 @@ pub struct SearchResult {
     pub sort_score: Option<f32>,
 }
 
+/// Filter options for search queries.
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+pub struct FilterOptions {
+    /// Filter by file types (e.g., ["jpg", "png"]). Empty means all types.
+    pub file_types: Vec<String>,
+    /// Minimum file size in bytes.
+    pub min_size: Option<u64>,
+    /// Maximum file size in bytes.
+    pub max_size: Option<u64>,
+    /// Minimum created_at timestamp in milliseconds.
+    pub min_created: Option<i64>,
+    /// Maximum created_at timestamp in milliseconds.
+    pub max_created: Option<i64>,
+    /// Minimum modified_at timestamp in milliseconds.
+    pub min_modified: Option<i64>,
+    /// Maximum modified_at timestamp in milliseconds.
+    pub max_modified: Option<i64>,
+}
+
+/// Sort options for search queries.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct SortOptions {
+    /// Field to sort by.
+    pub field: SortField,
+    /// Sort direction.
+    pub ascending: bool,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+pub enum SortField {
+    #[serde(rename = "relevance")]
+    Relevance,
+    #[serde(rename = "created_at")]
+    CreatedAt,
+    #[serde(rename = "modified_at")]
+    ModifiedAt,
+    #[serde(rename = "file_size")]
+    FileSize,
+}
+
+impl Default for SortOptions {
+    fn default() -> Self {
+        Self {
+            field: SortField::Relevance,
+            ascending: true,
+        }
+    }
+}
+
+/// Build a SQL filter predicate from FilterOptions.
+fn build_filter_predicate(filter: &FilterOptions) -> Result<Option<String>, String> {
+    let mut conditions = Vec::new();
+
+    // File type filter
+    if !filter.file_types.is_empty() {
+        let types: Result<Vec<String>, String> = filter
+            .file_types
+            .iter()
+            .map(|t| escape_sql_string(t).map(|e| format!("'{}'", e)))
+            .collect();
+        conditions.push(format!("file_type IN ({})", types?.join(", ")));
+    }
+
+    // File size filters
+    if let Some(min) = filter.min_size {
+        conditions.push(format!("file_size >= {}", min));
+    }
+    if let Some(max) = filter.max_size {
+        conditions.push(format!("file_size <= {}", max));
+    }
+
+    // Created date filters
+    if let Some(min) = filter.min_created {
+        conditions.push(format!("created_at >= {}", min));
+    }
+    if let Some(max) = filter.max_created {
+        conditions.push(format!("created_at <= {}", max));
+    }
+
+    // Modified date filters
+    if let Some(min) = filter.min_modified {
+        conditions.push(format!("modified_at >= {}", min));
+    }
+    if let Some(max) = filter.max_modified {
+        conditions.push(format!("modified_at <= {}", max));
+    }
+
+    if conditions.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(conditions.join(" AND ")))
+    }
+}
+
 pub async fn get_all_images(table: &Table) -> Result<Vec<ImageInfo>, String> {
     let batches: Vec<RecordBatch> = table
         .query()
@@ -564,6 +658,143 @@ pub async fn search_by_embedding(
         .map_err(|e: lancedb::Error| e.to_string())?;
 
     extract_search_results_from_batches(batches)
+}
+
+/// Search with filtering and sorting support.
+/// If query_embedding is provided, uses vector search with filters applied post-query.
+/// Otherwise, uses direct table query with filters.
+pub async fn search_filtered(
+    table: &Table,
+    query_embedding: Option<&[f32]>,
+    filter: &FilterOptions,
+    sort: &SortOptions,
+    limit: usize,
+) -> Result<Vec<SearchResult>, String> {
+    let filter_predicate = build_filter_predicate(filter)?;
+
+    let mut results = if let Some(embedding) = query_embedding {
+        // Vector search with optional filter
+        let mut query = table
+            .vector_search(embedding.to_vec())
+            .map_err(|e| format!("Failed to create vector search: {}", e))?
+            .column("embedding_1")
+            .limit(limit)
+            .select(lancedb::query::Select::Columns(vec![
+                "path".to_string(),
+                "file_type".to_string(),
+                "file_size".to_string(),
+                "created_at".to_string(),
+                "modified_at".to_string(),
+            ]));
+
+        if let Some(pred) = &filter_predicate {
+            query = query.only_if(pred.clone());
+        }
+
+        let batches: Vec<RecordBatch> = query
+            .execute()
+            .await
+            .map_err(|e: lancedb::Error| e.to_string())?
+            .try_collect()
+            .await
+            .map_err(|e: lancedb::Error| e.to_string())?;
+
+        extract_search_results_from_batches(batches)?
+    } else {
+        // Non-vector query with filters
+        let mut query = table.query();
+
+        if let Some(pred) = &filter_predicate {
+            query = query.only_if(pred.clone());
+        }
+
+        let batches: Vec<RecordBatch> = query
+            .select(lancedb::query::Select::Columns(vec![
+                "path".to_string(),
+                "file_type".to_string(),
+                "file_size".to_string(),
+                "created_at".to_string(),
+                "modified_at".to_string(),
+            ]))
+            .execute()
+            .await
+            .map_err(|e: lancedb::Error| e.to_string())?
+            .try_collect()
+            .await
+            .map_err(|e: lancedb::Error| e.to_string())?;
+
+        extract_search_results_from_batches(batches)?
+    };
+
+    // Apply sorting (in-memory since LanceDB sorting is limited)
+    match sort.field {
+        SortField::Relevance => {
+            // For vector search, results are already sorted by distance.
+            // For non-vector, no relevance score exists, so no change.
+        }
+        SortField::CreatedAt => {
+            results.sort_by(|a, b| {
+                if sort.ascending {
+                    a.created_at.cmp(&b.created_at)
+                } else {
+                    b.created_at.cmp(&a.created_at)
+                }
+            });
+        }
+        SortField::ModifiedAt => {
+            results.sort_by(|a, b| {
+                if sort.ascending {
+                    a.modified_at.cmp(&b.modified_at)
+                } else {
+                    b.modified_at.cmp(&a.modified_at)
+                }
+            });
+        }
+        SortField::FileSize => {
+            results.sort_by(|a, b| {
+                if sort.ascending {
+                    a.file_size.cmp(&b.file_size)
+                } else {
+                    b.file_size.cmp(&a.file_size)
+                }
+            });
+        }
+    }
+
+    Ok(results)
+}
+
+/// Get distinct file types from the database.
+pub async fn get_file_types(table: &Table) -> Result<Vec<String>, String> {
+    let batches: Vec<RecordBatch> = table
+        .query()
+        .select(lancedb::query::Select::Columns(vec!["file_type".to_string()]))
+        .execute()
+        .await
+        .map_err(|e: lancedb::Error| e.to_string())?
+        .try_collect()
+        .await
+        .map_err(|e: lancedb::Error| e.to_string())?;
+
+    let mut types = std::collections::HashSet::new();
+    for batch in batches {
+        let col = batch
+            .column_by_name("file_type")
+            .ok_or("file_type not found")?
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .ok_or("file_type not string")?;
+
+        for i in 0..col.len() {
+            if !col.is_null(i) {
+                types.insert(col.value(i).to_string());
+            }
+        }
+    }
+
+    let mut result: Vec<String> = types.into_iter().collect();
+    result.sort();
+    Ok(result)
 }
 
 #[cfg(test)]
