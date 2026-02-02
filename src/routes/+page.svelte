@@ -96,23 +96,16 @@
 
   // Settings menu state
   let showSettingsMenu = $state(false);
-  let showOcrMenu = $state(false);
-  let showFilterMenu = $state(false);
-  let ocrMode = $state<"disabled" | "lexical" | "semantic" | "both">("disabled");
+  let ocrLexical = $state(false);
+  let ocrSemantic = $state(false);
 
-  // Filter & Sort state
+  // Sort state
   type SortField = "relevance" | "created_at" | "modified_at" | "file_size";
   let sortField = $state<SortField>("relevance");
   let sortAscending = $state(true);
-  let filterDateFrom = $state<string>("");
-  let filterDateTo = $state<string>("");
 
-  // Track if any filter is active
-  let hasActiveFilters = $derived(
-    filterDateFrom !== "" ||
-    filterDateTo !== "" ||
-    sortField !== "relevance"
-  );
+  // Track if any sort is active (for filtered search)
+  let hasActiveFilters = $derived(sortField !== "relevance");
 
   // Context menu state
   let contextMenu = $state<{ x: number; y: number; image: ImageInfo } | null>(null);
@@ -146,8 +139,8 @@
       max_size: null,
       min_created: null,
       max_created: null,
-      min_modified: filterDateFrom ? new Date(filterDateFrom).getTime() : null,
-      max_modified: filterDateTo ? new Date(filterDateTo + "T23:59:59").getTime() : null,
+      min_modified: null,
+      max_modified: null,
     };
   }
 
@@ -456,50 +449,10 @@
   function handleWindowClick() {
     closeContextMenu();
     showSettingsMenu = false;
-    showOcrMenu = false;
-    showFilterMenu = false;
-  }
-
-  function clearFilters() {
-    filterDateFrom = "";
-    filterDateTo = "";
-    sortField = "relevance";
-    sortAscending = true;
-    search(searchQuery);
-  }
-
-  function setSortField(field: SortField) {
-    sortField = field;
-    search(searchQuery);
-  }
-
-  function setSortDirection(ascending: boolean) {
-    sortAscending = ascending;
-    search(searchQuery);
-  }
-
-  function setDateFrom(value: string) {
-    filterDateFrom = value;
-    search(searchQuery);
-  }
-
-  function setDateTo(value: string) {
-    filterDateTo = value;
-    search(searchQuery);
   }
 
   function getFilename(path: string): string {
     return path.split(/[\\/]/).pop() || path;
-  }
-
-  function getScanningLabel(defaultLabel: string): string {
-    if (!isLoading) {
-      return defaultLabel;
-    }
-    if (scanProgress && scanProgress.total > 0) {
-      return `Scanning ${scanProgress.current}/${scanProgress.total} images...`;
-    }
-    return "Scanning...";
   }
 
   function formatDuration(ms: number): string {
@@ -532,11 +485,71 @@
       ortDownloadProgress = event.payload;
     });
 
+    const unlistenMenuPromise = listen<string>("menu-event", (event) => {
+      handleMenuEvent(event.payload);
+    });
+
     return () => {
       unlistenScanPromise.then((unlisten) => unlisten());
       unlistenOrtPromise.then((unlisten) => unlisten());
+      unlistenMenuPromise.then((unlisten) => unlisten());
     };
   });
+
+  function handleMenuEvent(menuId: string) {
+    switch (menuId) {
+      case "add_folder":
+        addDirectory();
+        break;
+      case "rescan":
+        rescanAll();
+        break;
+      case "view_files":
+        openAppDataFolder();
+        break;
+      case "ocr_lexical":
+        ocrLexical = !ocrLexical;
+        break;
+      case "ocr_semantic":
+        ocrSemantic = !ocrSemantic;
+        break;
+      case "sort_relevance":
+        sortField = "relevance";
+        sortAscending = true;
+        search(searchQuery);
+        break;
+      case "sort_created_asc":
+        sortField = "created_at";
+        sortAscending = true;
+        search(searchQuery);
+        break;
+      case "sort_created_desc":
+        sortField = "created_at";
+        sortAscending = false;
+        search(searchQuery);
+        break;
+      case "sort_modified_asc":
+        sortField = "modified_at";
+        sortAscending = true;
+        search(searchQuery);
+        break;
+      case "sort_modified_desc":
+        sortField = "modified_at";
+        sortAscending = false;
+        search(searchQuery);
+        break;
+      case "sort_size_asc":
+        sortField = "file_size";
+        sortAscending = true;
+        search(searchQuery);
+        break;
+      case "sort_size_desc":
+        sortField = "file_size";
+        sortAscending = false;
+        search(searchQuery);
+        break;
+    }
+  }
 </script>
 
 <svelte:window
@@ -548,96 +561,26 @@
 
 <div class="app">
   <header class="toolbar">
-    <input
-      type="text"
-      class="search-input"
-      placeholder="Search images..."
-      value={similarToImage ? `similar to: ${getFilename(similarToImage.path)}` : searchQuery}
-      oninput={handleSearchInput}
-      onfocus={() => { if (similarToImage) clearSimilarSearch(); }}
-    />
+    {#if isLoading && scanProgress && scanProgress.total > 0}
+      <div class="search-input scanning-status">
+        Scanning {scanProgress.current}/{scanProgress.total} images...
+      </div>
+    {:else}
+      <input
+        type="text"
+        class="search-input"
+        placeholder="Search images..."
+        value={similarToImage ? `similar to: ${getFilename(similarToImage.path)}` : searchQuery}
+        oninput={handleSearchInput}
+        onfocus={() => { if (similarToImage) clearSimilarSearch(); }}
+      />
+    {/if}
 
     <div class="toolbar-buttons">
       <div class="dropdown">
         <button
-          class="toolbar-btn"
-          onclick={(e) => { e.stopPropagation(); showOcrMenu = !showOcrMenu; showSettingsMenu = false; showFilterMenu = false; }}
-        >
-          OCR: {ocrMode}
-        </button>
-        {#if showOcrMenu}
-          <div class="dropdown-menu" onclick={(e) => e.stopPropagation()}>
-            <button class="dropdown-item" class:active={ocrMode === "disabled"} onclick={() => { ocrMode = "disabled"; showOcrMenu = false; }}>Disabled</button>
-            <button class="dropdown-item" class:active={ocrMode === "lexical"} onclick={() => { ocrMode = "lexical"; showOcrMenu = false; }}>Lexical</button>
-            <button class="dropdown-item" class:active={ocrMode === "semantic"} onclick={() => { ocrMode = "semantic"; showOcrMenu = false; }}>Semantic</button>
-            <button class="dropdown-item" class:active={ocrMode === "both"} onclick={() => { ocrMode = "both"; showOcrMenu = false; }}>Both</button>
-          </div>
-        {/if}
-      </div>
-
-      <div class="dropdown">
-        <button
-          class="toolbar-btn"
-          class:has-filters={hasActiveFilters}
-          onclick={(e) => { e.stopPropagation(); showFilterMenu = !showFilterMenu; showOcrMenu = false; showSettingsMenu = false; }}
-        >
-          Sort/Filter{hasActiveFilters ? " *" : ""}
-        </button>
-        {#if showFilterMenu}
-          <div class="dropdown-menu filter-menu" onclick={(e) => e.stopPropagation()}>
-            <div class="menu-section">
-              <div class="menu-header">Sort By</div>
-              <div class="sort-options">
-                <button class="dropdown-item" class:active={sortField === "relevance"} onclick={() => setSortField("relevance")}>Relevance</button>
-                <button class="dropdown-item" class:active={sortField === "created_at"} onclick={() => setSortField("created_at")}>Date Created</button>
-                <button class="dropdown-item" class:active={sortField === "modified_at"} onclick={() => setSortField("modified_at")}>Date Modified</button>
-                <button class="dropdown-item" class:active={sortField === "file_size"} onclick={() => setSortField("file_size")}>File Size</button>
-              </div>
-              {#if sortField !== "relevance"}
-                <div class="sort-direction">
-                  <button class="dropdown-item" class:active={sortAscending} onclick={() => setSortDirection(true)}>Ascending</button>
-                  <button class="dropdown-item" class:active={!sortAscending} onclick={() => setSortDirection(false)}>Descending</button>
-                </div>
-              {/if}
-            </div>
-
-            <div class="menu-section">
-              <div class="menu-header">Date Modified</div>
-              <div class="date-filters">
-                <label class="filter-label">
-                  <span>From</span>
-                  <input
-                    type="date"
-                    class="filter-input"
-                    value={filterDateFrom}
-                    onchange={(e) => setDateFrom((e.target as HTMLInputElement).value)}
-                  />
-                </label>
-                <label class="filter-label">
-                  <span>To</span>
-                  <input
-                    type="date"
-                    class="filter-input"
-                    value={filterDateTo}
-                    onchange={(e) => setDateTo((e.target as HTMLInputElement).value)}
-                  />
-                </label>
-              </div>
-            </div>
-
-            {#if hasActiveFilters}
-              <div class="menu-section">
-                <button class="menu-btn" onclick={clearFilters}>Clear All</button>
-              </div>
-            {/if}
-          </div>
-        {/if}
-      </div>
-
-      <div class="dropdown">
-        <button
           class="toolbar-btn gear-btn"
-          onclick={(e) => { e.stopPropagation(); showSettingsMenu = !showSettingsMenu; showOcrMenu = false; showFilterMenu = false; }}
+          onclick={(e) => { e.stopPropagation(); showSettingsMenu = !showSettingsMenu; }}
         >
           &#9881;
         </button>
@@ -655,12 +598,6 @@
                   </div>
                 {/each}
               {/if}
-              <button class="menu-btn" onclick={addDirectory} disabled={isLoading}>
-                {getScanningLabel("Add Directory")}
-              </button>
-              <button class="menu-btn" onclick={rescanAll} disabled={isLoading || watchedDirectories.length === 0}>
-                {getScanningLabel("Rescan All")}
-              </button>
               {#if lastScanDurationMs !== null}
                 <div class="menu-info">Last scan: {formatDuration(lastScanDurationMs)}</div>
               {/if}
@@ -678,7 +615,6 @@
             <div class="menu-section">
               <div class="menu-header">Debug</div>
               <div class="menu-info">Indexed: {indexedCount} images</div>
-              <button class="menu-btn" onclick={openAppDataFolder}>Open App Data Folder</button>
               <button class="menu-btn" onclick={deleteAllThumbnails}>Delete All Thumbnails</button>
               <button class="menu-btn" onclick={clearDatabase}>Clear Database</button>
               <button class="menu-btn" onclick={inspectSiglipConfig}>Inspect SigLIP Config</button>
@@ -1071,6 +1007,13 @@
 
   .search-input::placeholder {
     color: var(--text-secondary);
+  }
+
+  .scanning-status {
+    display: flex;
+    align-items: center;
+    color: var(--text-secondary);
+    font-style: italic;
   }
 
   .toolbar-buttons {
@@ -1730,61 +1673,4 @@
     font-size: 13px;
   }
 
-  /* Filter Menu Styles */
-  .toolbar-btn.has-filters {
-    background: rgba(58, 90, 58, 0.3);
-    border-color: #4a6a4a;
-  }
-
-  .filter-menu {
-    min-width: 200px;
-    padding: 8px 0;
-  }
-
-  .sort-options {
-    display: flex;
-    flex-direction: column;
-  }
-
-  .sort-direction {
-    margin-top: 4px;
-    padding-top: 4px;
-    border-top: 1px solid var(--border-color);
-    display: flex;
-    flex-direction: column;
-  }
-
-  .date-filters {
-    display: flex;
-    gap: 8px;
-  }
-
-  .filter-label {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-    flex: 1;
-    font-size: 12px;
-    color: var(--text-secondary);
-  }
-
-  .filter-input {
-    padding: 6px 8px;
-    background: var(--bg-base);
-    border: 1px solid var(--border-color);
-    border-radius: 4px;
-    color: var(--text-primary);
-    font-size: 12px;
-    width: 100%;
-    box-sizing: border-box;
-  }
-
-  .filter-input:focus {
-    outline: none;
-    border-color: #5a5250;
-  }
-
-  .filter-input::-webkit-calendar-picker-indicator {
-    filter: invert(0.7);
-  }
 </style>
