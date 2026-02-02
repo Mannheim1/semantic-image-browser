@@ -49,6 +49,7 @@
   let watchedDirectories = $state<string[]>([]);
   let indexedCount = $state(0);
   let embeddingModelLoaded = $state(false);
+  let modelLoading = $state(true);
   let lastScanDurationMs = $state<number | null>(null);
   let scanProgress = $state<ScanProgressPayload | null>(null);
   let isPanelOpen = $state(false);
@@ -159,7 +160,11 @@
   async function loadInitialData() {
     watchedDirectories = await invoke("get_watched_directories");
     indexedCount = await invoke("get_indexed_count");
-    embeddingModelLoaded = await invoke("get_embedding_model_status");
+    // Only update embeddingModelLoaded if we're not in the initial loading phase
+    // (model_ready event will set the final value)
+    if (!modelLoading) {
+      embeddingModelLoaded = await invoke("get_embedding_model_status");
+    }
     ortStatus = await invoke("get_ort_status");
     await search("");
   }
@@ -395,10 +400,16 @@
       handleMenuEvent(event.payload);
     });
 
+    const unlistenModelReadyPromise = listen<void>("model_ready", async () => {
+      modelLoading = false;
+      embeddingModelLoaded = await invoke("get_embedding_model_status");
+    });
+
     return () => {
       unlistenScanPromise.then((unlisten) => unlisten());
       unlistenOrtPromise.then((unlisten) => unlisten());
       unlistenMenuPromise.then((unlisten) => unlisten());
+      unlistenModelReadyPromise.then((unlisten) => unlisten());
     };
   });
 
@@ -480,15 +491,17 @@
       <input
         type="text"
         class="search-input"
-        placeholder={isScanning && scanProgress && scanProgress.total > 0
-          ? (scanProgress.phase === "thumbnails"
-            ? `Creating ${scanProgress.current}/${scanProgress.total} thumbnails...`
-            : `Scanning ${scanProgress.current}/${scanProgress.total} images...`)
-          : `Search ${indexedCount} images...`}
+        placeholder={modelLoading
+          ? "Loading model..."
+          : isScanning && scanProgress && scanProgress.total > 0
+            ? (scanProgress.phase === "thumbnails"
+              ? `Creating ${scanProgress.current}/${scanProgress.total} thumbnails...`
+              : `Scanning ${scanProgress.current}/${scanProgress.total} images...`)
+            : `Search ${indexedCount} images...`}
         value={similarToImage ? `similar to: ${getFilename(similarToImage.path)}` : searchQuery}
         oninput={handleSearchInput}
         onfocus={() => { if (similarToImage) clearSimilarSearch(); }}
-        disabled={isScanning}
+        disabled={isScanning || modelLoading}
       />
     </div>
 

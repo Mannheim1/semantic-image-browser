@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::RwLock;
 use tauri::menu::{CheckMenuItemBuilder, MenuBuilder, MenuItemBuilder, PredefinedMenuItem, SubmenuBuilder};
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_opener::OpenerExt;
@@ -32,9 +33,12 @@ pub struct AppState {
     /// Each model is wrapped in Mutex because inference requires &mut self.
     /// Models are loaded once at startup and reused across scans to avoid
     /// repeated disk reads and memory allocation.
-    pub embedding_pool: Option<EmbeddingPool>,
+    /// Wrapped in RwLock<Option<Arc<...>>> to allow async initialization after app starts.
+    /// Arc allows cloning a reference to use across await points.
+    pub embedding_pool: RwLock<Option<Arc<EmbeddingPool>>>,
     /// Model identifier (e.g., "siglip2-base-patch16-256") for database storage.
-    pub model_id: Option<String>,
+    /// Wrapped in RwLock to allow async initialization after app starts.
+    pub model_id: RwLock<Option<String>>,
 }
 
 /// A pool of embedding models for parallel inference.
@@ -299,7 +303,7 @@ async fn set_model_config(app: AppHandle, ort_dylib_path: String, model_dir: Str
 
 #[tauri::command]
 fn get_embedding_model_status(state: tauri::State<'_, AppState>) -> bool {
-    state.embedding_pool.is_some()
+    state.embedding_pool.read().map(|p| p.is_some()).unwrap_or(false)
 }
 
 #[tauri::command]
@@ -316,12 +320,15 @@ async fn add_watched_directory(app: AppHandle, state: tauri::State<'_, AppState>
     let table = state.table.lock().await;
 
     let progress = ScanProgressState::new(&app);
+    // Clone Arc and String out of the locks before the await point
+    let embedding_pool = state.embedding_pool.read().map_err(|e| e.to_string())?.clone();
+    let model_id = state.model_id.read().map_err(|e| e.to_string())?.clone();
     let (result, _) = scan_directory_internal(
         &table,
         &thumb_dir,
         &path,
-        state.embedding_pool.as_ref(),
-        state.model_id.as_deref(),
+        embedding_pool.as_deref(),
+        model_id.as_deref(),
         Some(progress),
     ).await?;
     Ok(result)
@@ -368,13 +375,16 @@ async fn rescan_all(app: AppHandle, state: tauri::State<'_, AppState>) -> Result
     let table = state.table.lock().await;
     let mut all_seen_paths: HashSet<String> = HashSet::new();
 
+    // Clone Arc and String out of the locks before the await points
+    let embedding_pool = state.embedding_pool.read().map_err(|e| e.to_string())?.clone();
+    let model_id = state.model_id.read().map_err(|e| e.to_string())?.clone();
     for dir in &cfg.watched_directories {
         match scan_directory_internal(
             &table,
             &thumb_dir,
             dir,
-            state.embedding_pool.as_ref(),
-            state.model_id.as_deref(),
+            embedding_pool.as_deref(),
+            model_id.as_deref(),
             Some(progress.clone()),
         ).await {
             Ok((result, seen_paths)) => {
@@ -463,13 +473,17 @@ async fn search_images(state: tauri::State<'_, AppState>, query: String) -> Resu
     }
 
     // Try to generate text embedding using the pool
-    let query_embedding = if let Some(pool) = &state.embedding_pool {
-        match pool.embed_text(&query) {
-            Ok(emb) => Some(emb),
-            Err(e) => {
-                eprintln!("Text embedding failed, falling back to filename search: {}", e);
-                None
+    let query_embedding = if let Ok(pool_guard) = state.embedding_pool.read() {
+        if let Some(pool) = pool_guard.as_ref() {
+            match pool.embed_text(&query) {
+                Ok(emb) => Some(emb),
+                Err(e) => {
+                    eprintln!("Text embedding failed, falling back to filename search: {}", e);
+                    None
+                }
             }
+        } else {
+            None
         }
     } else {
         None
@@ -514,13 +528,17 @@ async fn search_images_filtered(
 
     // Generate text embedding for the query if available
     let query_embedding = if !query.trim().is_empty() {
-        if let Some(pool) = &state.embedding_pool {
-            match pool.embed_text(&query) {
-                Ok(emb) => Some(emb),
-                Err(e) => {
-                    eprintln!("Text embedding failed: {}", e);
-                    None
+        if let Ok(pool_guard) = state.embedding_pool.read() {
+            if let Some(pool) = pool_guard.as_ref() {
+                match pool.embed_text(&query) {
+                    Ok(emb) => Some(emb),
+                    Err(e) => {
+                        eprintln!("Text embedding failed: {}", e);
+                        None
+                    }
                 }
+            } else {
+                None
             }
         } else {
             None
@@ -946,14 +964,33 @@ pub fn run() {
             });
 
             let handle = app.handle().clone();
-            tauri::async_runtime::block_on(async {
+
+            // Phase 1: Quick initialization (database only) - blocks briefly
+            // This is fast and required for the app to function at all
+            let (db, table) = tauri::async_runtime::block_on(async {
                 let db = database::open_connection(&handle, &cfg).await?;
                 let table = database::get_or_create_table(&db).await?;
+                Ok::<(Connection, Table), String>((db, table))
+            })
+            .expect("Failed to initialize database");
 
+            // Register AppState with empty embedding pool (will be populated async)
+            handle.manage(AppState {
+                db,
+                table: tokio::sync::Mutex::new(table),
+                embedding_pool: RwLock::new(None), // Will be Some(Arc<EmbeddingPool>) after async init
+                model_id: RwLock::new(None),
+            });
+
+            // Phase 2: Heavy initialization (embedding models) - runs in background
+            // This allows the UI to appear immediately while models load
+            let handle_for_task = app.handle().clone();
+            let cfg_for_task = cfg.clone();
+            tauri::async_runtime::spawn(async move {
                 // Determine the ONNX Runtime library path:
                 // 1. If ort_dylib_path is set in config (dev override), use that
                 // 2. Otherwise, check if runtime is downloaded to app data
-                let ort_path: Option<PathBuf> = if let Some(override_path) = &cfg.ort_dylib_path {
+                let ort_path: Option<PathBuf> = if let Some(override_path) = &cfg_for_task.ort_dylib_path {
                     let p = PathBuf::from(override_path);
                     if p.exists() {
                         println!("Using ONNX Runtime from config override: {}", p.display());
@@ -964,7 +1001,7 @@ pub fn run() {
                     }
                 } else {
                     // Check for downloaded runtime
-                    match ort_download::get_ort_library_path(&handle) {
+                    match ort_download::get_ort_library_path(&handle_for_task) {
                         Ok(Some(p)) => {
                             println!("Using downloaded ONNX Runtime: {}", p.display());
                             Some(p)
@@ -981,10 +1018,10 @@ pub fn run() {
                 };
 
                 // Check if GPU runtime is configured
-                let use_gpu = cfg.runtime_type.as_deref() == Some("gpu");
+                let use_gpu = cfg_for_task.runtime_type.as_deref() == Some("gpu");
 
                 // Try to load the embedding model pool if ORT and model are available
-                let (embedding_pool, model_id) = match (ort_path, &cfg.model_dir) {
+                let (embedding_pool, model_id) = match (ort_path, &cfg_for_task.model_dir) {
                     (Some(ort_path), Some(model_path)) => {
                         let model_path = Path::new(model_path);
 
@@ -1006,7 +1043,7 @@ pub fn run() {
 
                             // Load the model pool
                             match EmbeddingPool::new(model_path, num_workers, use_gpu) {
-                                Ok(pool) => (Some(pool), model_id),
+                                Ok(pool) => (Some(Arc::new(pool)), model_id),
                                 Err(e) => {
                                     eprintln!("Warning: Failed to load embedding model pool: {}", e);
                                     (None, None)
@@ -1024,15 +1061,20 @@ pub fn run() {
                     }
                 };
 
-                handle.manage(AppState {
-                    db,
-                    table: tokio::sync::Mutex::new(table),
-                    embedding_pool,
-                    model_id,
-                });
-                Ok::<(), String>(())
-            })
-            .expect("Failed to initialize database");
+                // Update the AppState with loaded models
+                if let Some(state) = handle_for_task.try_state::<AppState>() {
+                    if let Ok(mut pool_guard) = state.embedding_pool.write() {
+                        *pool_guard = embedding_pool;
+                    }
+                    if let Ok(mut id_guard) = state.model_id.write() {
+                        *id_guard = model_id;
+                    }
+                }
+
+                // Emit event to notify frontend that model loading is complete
+                let _ = handle_for_task.emit("model_ready", ());
+            });
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
