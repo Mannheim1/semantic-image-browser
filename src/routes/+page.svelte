@@ -22,21 +22,6 @@
     sort_score?: number | null;
   }
 
-  interface SiglipConfigInfo {
-    has_text: boolean;
-    has_vision: boolean;
-    text_hidden_size: number | null;
-    vision_hidden_size: number | null;
-  }
-
-  interface EmbeddingTestResult {
-    model_loaded: boolean;
-    image_embedding_dim: number | null;
-    text_embedding_dim: number | null;
-    similarity: number | null;
-    error: string | null;
-  }
-
   interface ScanProgressPayload {
     phase: string;
     current: number;
@@ -63,10 +48,6 @@
   let isScanning = $state(false);
   let watchedDirectories = $state<string[]>([]);
   let indexedCount = $state(0);
-  let siglipInfo = $state<SiglipConfigInfo | null>(null);
-  let siglipError = $state("");
-  let embeddingResult = $state<EmbeddingTestResult | null>(null);
-  let embeddingTesting = $state(false);
   let embeddingModelLoaded = $state(false);
   let lastScanDurationMs = $state<number | null>(null);
   let scanProgress = $state<ScanProgressPayload | null>(null);
@@ -86,15 +67,6 @@
   let ortDownloadProgress = $state<OrtDownloadProgress | null>(null);
   let ortDownloadError = $state<string | null>(null);
   let selectedRuntimeType = $state<"cpu" | "gpu">("cpu");
-
-  // Embedding test modal state
-  let showEmbeddingModal = $state(false);
-  let embeddingInputs = $state({
-    ortDylibPath: "C:\\Dev\\onnxruntime-win-x64-1.23.2\\lib\\onnxruntime.dll",
-    modelDir: "C:\\Dev\\test\\siglip2-base-patch16-256-ONNX",
-    imagePath: "",
-    query: "a photo of a cat"
-  });
 
   // Settings menu state
   let showSettingsMenu = $state(false);
@@ -285,78 +257,6 @@
 
   async function openAppDataFolder() {
     await invoke("open_app_data_folder");
-  }
-
-  async function inspectSiglipConfig() {
-    const selected = await open({
-      directory: false,
-      multiple: false,
-      title: "Select SigLIP config.json",
-      filters: [{ name: "Config", extensions: ["json"] }]
-    });
-
-    if (!selected || Array.isArray(selected)) {
-      return;
-    }
-
-    try {
-      siglipInfo = await invoke("inspect_siglip_config", { path: selected });
-      siglipError = "";
-    } catch (e) {
-      siglipInfo = null;
-      siglipError = String(e);
-    }
-  }
-
-  function openEmbeddingModal() {
-    showEmbeddingModal = true;
-    showSettingsMenu = false;
-  }
-
-  async function runEmbeddingTest() {
-    const { ortDylibPath, modelDir, imagePath, query } = embeddingInputs;
-
-    if (!ortDylibPath || !modelDir || !imagePath || !query) {
-      embeddingResult = {
-        model_loaded: false,
-        image_embedding_dim: null,
-        text_embedding_dim: null,
-        similarity: null,
-        error: "All fields are required"
-      };
-      return;
-    }
-
-    embeddingTesting = true;
-    embeddingResult = null;
-
-    try {
-      embeddingResult = await invoke("test_embedding", { ortDylibPath, modelDir, imagePath, query });
-    } catch (e) {
-      embeddingResult = {
-        model_loaded: false,
-        image_embedding_dim: null,
-        text_embedding_dim: null,
-        similarity: null,
-        error: String(e)
-      };
-    }
-
-    embeddingTesting = false;
-  }
-
-  async function saveModelConfig() {
-    const { ortDylibPath, modelDir } = embeddingInputs;
-    if (!ortDylibPath || !modelDir) {
-      alert("Both ONNX Runtime DLL path and Model Directory are required");
-      return;
-    }
-    try {
-      await invoke("set_model_config", { ortDylibPath, modelDir });
-      alert("Model configuration saved. Restart the app to load the model.");
-    } catch (e) {
-      alert("Failed to save config: " + String(e));
-    }
   }
 
   function handleImageDblClick(img: ImageInfo) {
@@ -612,39 +512,6 @@
                 {ortStatus?.installed ? "Manage Runtime" : "Setup Runtime"}
               </button>
             </div>
-            <div class="menu-section">
-              <div class="menu-header">Debug</div>
-              <button class="menu-btn" onclick={inspectSiglipConfig}>Inspect SigLIP Config</button>
-              <button class="menu-btn" onclick={openEmbeddingModal}>
-                Test Embedding
-              </button>
-              {#if siglipError}
-                <div class="menu-info">SigLIP error: {siglipError}</div>
-              {/if}
-              {#if siglipInfo}
-                <div class="menu-info">SigLIP config:</div>
-                <div class="menu-info">Text tower: {siglipInfo.has_text ? "yes" : "no"}</div>
-                <div class="menu-info">Vision tower: {siglipInfo.has_vision ? "yes" : "no"}</div>
-                <div class="menu-info">Text hidden size: {siglipInfo.text_hidden_size ?? "n/a"}</div>
-                <div class="menu-info">Vision hidden size: {siglipInfo.vision_hidden_size ?? "n/a"}</div>
-              {/if}
-              {#if embeddingResult}
-                <div class="menu-info" style="margin-top: 8px;">Embedding test:</div>
-                <div class="menu-info">Model loaded: {embeddingResult.model_loaded ? "yes" : "no"}</div>
-                {#if embeddingResult.image_embedding_dim}
-                  <div class="menu-info">Image embedding: {embeddingResult.image_embedding_dim} dims</div>
-                {/if}
-                {#if embeddingResult.text_embedding_dim}
-                  <div class="menu-info">Text embedding: {embeddingResult.text_embedding_dim} dims</div>
-                {/if}
-                {#if embeddingResult.similarity !== null}
-                  <div class="menu-info">Similarity: {embeddingResult.similarity.toFixed(4)}</div>
-                {/if}
-                {#if embeddingResult.error}
-                  <div class="menu-info" style="color: #ff6b6b;">Error: {embeddingResult.error}</div>
-                {/if}
-              {/if}
-            </div>
           </div>
         {/if}
       </div>
@@ -735,77 +602,6 @@
       >
         Find similar
       </button>
-    </div>
-  {/if}
-
-  {#if showEmbeddingModal}
-    <div class="modal-overlay" onclick={() => showEmbeddingModal = false}>
-      <div class="modal" onclick={(e) => e.stopPropagation()}>
-        <div class="modal-header">
-          <span>Test Embedding</span>
-          <button class="modal-close" onclick={() => showEmbeddingModal = false}>×</button>
-        </div>
-        <div class="modal-body">
-          <label class="modal-label">
-            ONNX Runtime DLL
-            <input
-              type="text"
-              class="modal-input"
-              bind:value={embeddingInputs.ortDylibPath}
-              placeholder="C:\path\to\onnxruntime.dll"
-            />
-          </label>
-          <label class="modal-label">
-            Model Directory
-            <input
-              type="text"
-              class="modal-input"
-              bind:value={embeddingInputs.modelDir}
-              placeholder="C:\path\to\siglip2-model"
-            />
-          </label>
-          <label class="modal-label">
-            Image Path
-            <input
-              type="text"
-              class="modal-input"
-              bind:value={embeddingInputs.imagePath}
-              placeholder="C:\path\to\image.jpg"
-            />
-          </label>
-          <label class="modal-label">
-            Text Query
-            <input
-              type="text"
-              class="modal-input"
-              bind:value={embeddingInputs.query}
-              placeholder="a photo of a cat"
-            />
-          </label>
-        </div>
-        <div class="modal-footer">
-          <div class="modal-result">
-            App model status: {embeddingModelLoaded ? "✓ Loaded" : "✗ Not loaded"}
-          </div>
-          {#if embeddingResult}
-            <div class="modal-result">
-              {#if embeddingResult.error}
-                <span class="result-error">Error: {embeddingResult.error}</span>
-              {:else}
-                <span>Test: ✓ | Image: {embeddingResult.image_embedding_dim}d | Text: {embeddingResult.text_embedding_dim}d | Similarity: {embeddingResult.similarity?.toFixed(4)}</span>
-              {/if}
-            </div>
-          {/if}
-          <div class="modal-buttons">
-            <button class="modal-btn" onclick={runEmbeddingTest} disabled={embeddingTesting}>
-              {embeddingTesting ? "Testing..." : "Run Test"}
-            </button>
-            <button class="modal-btn" onclick={saveModelConfig}>
-              Save Config
-            </button>
-          </div>
-        </div>
-      </div>
     </div>
   {/if}
 
