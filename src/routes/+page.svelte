@@ -369,13 +369,6 @@
     contextMenu = { x: e.clientX, y: e.clientY, image: img };
   }
 
-  function viewDistanceScore(img: ImageInfo) {
-    if (img.sort_score === null || img.sort_score === undefined) {
-      return;
-    }
-    alert(`Distance: ${img.sort_score.toFixed(4)}`);
-  }
-
   async function findSimilar(img: ImageInfo) {
     isLoading = true;
     closePanel();
@@ -800,14 +793,6 @@
     >
       <button class="context-item" onclick={() => { showInFolder(contextMenu!.image.path); closeContextMenu(); }}>
         Show in folder
-      </button>
-      <button
-        class="context-item"
-        class:disabled={searchQuery.trim().length === 0}
-        disabled={searchQuery.trim().length === 0}
-        onclick={() => { viewDistanceScore(contextMenu!.image); closeContextMenu(); }}
-      >
-        View distance
       </button>
       <button
         class="context-item"
