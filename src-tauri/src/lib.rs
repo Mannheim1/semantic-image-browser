@@ -867,6 +867,9 @@ pub fn run() {
                 .separator()
                 .item(&MenuItemBuilder::new("&View Files").id("view_files").build(app)?)
                 .separator()
+                .item(&MenuItemBuilder::new("Clear &Thumbnails").id("clear_thumbnails").build(app)?)
+                .item(&MenuItemBuilder::new("Clear &Database").id("clear_database").build(app)?)
+                .separator()
                 .item(&PredefinedMenuItem::quit(app, None)?)
                 .build()?;
 

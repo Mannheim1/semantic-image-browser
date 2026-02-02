@@ -238,6 +238,7 @@
       const start = performance.now();
       await invoke("add_watched_directory", { path: selected });
       lastScanDurationMs = performance.now() - start;
+      console.log(`Scan completed in ${formatDuration(lastScanDurationMs)}`);
       await loadInitialData();
       isLoading = false;
     }
@@ -254,6 +255,7 @@
     const start = performance.now();
     await invoke("rescan_all");
     lastScanDurationMs = performance.now() - start;
+    console.log(`Scan completed in ${formatDuration(lastScanDurationMs)}`);
     await loadInitialData();
     isLoading = false;
   }
@@ -511,6 +513,12 @@
       case "manage_folders":
         showFoldersModal = true;
         break;
+      case "clear_thumbnails":
+        deleteAllThumbnails();
+        break;
+      case "clear_database":
+        clearDatabase();
+        break;
       case "ocr_lexical":
         ocrLexical = !ocrLexical;
         break;
@@ -601,8 +609,6 @@
             </div>
             <div class="menu-section">
               <div class="menu-header">Debug</div>
-              <button class="menu-btn" onclick={deleteAllThumbnails}>Delete All Thumbnails</button>
-              <button class="menu-btn" onclick={clearDatabase}>Clear Database</button>
               <button class="menu-btn" onclick={inspectSiglipConfig}>Inspect SigLIP Config</button>
               <button class="menu-btn" onclick={openEmbeddingModal}>
                 Test Embedding
