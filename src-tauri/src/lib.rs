@@ -133,6 +133,7 @@ pub struct EmbeddingTestResult {
 
 #[derive(Clone, Serialize)]
 pub struct ScanProgressPayload {
+    pub phase: String,
     pub current: u64,
     pub total: u64,
 }
@@ -140,6 +141,7 @@ pub struct ScanProgressPayload {
 #[derive(Clone)]
 pub struct ScanProgressState {
     app: AppHandle,
+    phase: Arc<std::sync::RwLock<String>>,
     total: Arc<AtomicUsize>,
     current: Arc<AtomicUsize>,
 }
@@ -148,13 +150,23 @@ impl ScanProgressState {
     pub fn new(app: &AppHandle) -> Self {
         Self {
             app: app.clone(),
+            phase: Arc::new(std::sync::RwLock::new("thumbnails".to_string())),
             total: Arc::new(AtomicUsize::new(0)),
             current: Arc::new(AtomicUsize::new(0)),
         }
     }
 
-    pub fn add_total(&self, count: usize) {
-        self.total.fetch_add(count, Ordering::SeqCst);
+    pub fn set_phase(&self, phase: &str) {
+        if let Ok(mut p) = self.phase.write() {
+            *p = phase.to_string();
+        }
+        self.current.store(0, Ordering::SeqCst);
+        self.total.store(0, Ordering::SeqCst);
+    }
+
+    pub fn set_total(&self, count: usize) {
+        self.total.store(count, Ordering::SeqCst);
+        self.current.store(0, Ordering::SeqCst);
         self.emit();
     }
 
@@ -164,11 +176,12 @@ impl ScanProgressState {
     }
 
     fn emit(&self) {
+        let phase = self.phase.read().map(|p| p.clone()).unwrap_or_default();
         let current = self.current.load(Ordering::SeqCst) as u64;
         let total = self.total.load(Ordering::SeqCst) as u64;
         let _ = self.app.emit(
             "scan_progress",
-            ScanProgressPayload { current, total },
+            ScanProgressPayload { phase, current, total },
         );
     }
 }
@@ -699,10 +712,6 @@ async fn scan_directory_internal(
         }
     }
 
-    if let Some(progress) = &progress {
-        progress.add_total(paths_needing_processing.len());
-    }
-
     // Generate thumbnails and embeddings for new/updated images
     if !paths_needing_processing.is_empty() {
         let thumb_dir_clone = thumb_dir.to_path_buf();
@@ -711,9 +720,14 @@ async fn scan_directory_internal(
             .map(|(p, _)| p.clone())
             .collect();
         let progress_for_thumbnails = progress.clone();
-        let use_thumbnail_progress = embedding_pool.is_none();
 
-        // Generate thumbnails in parallel (existing logic)
+        // Set up thumbnail phase progress
+        if let Some(progress) = &progress {
+            progress.set_phase("thumbnails");
+            progress.set_total(paths_for_thumbnails.len());
+        }
+
+        // Generate thumbnails in parallel
         let thumbnail_errors = tokio::task::spawn_blocking(move || {
             let errors = std::sync::Mutex::new(Vec::new());
 
@@ -733,10 +747,8 @@ async fn scan_directory_internal(
                             if let Err(e) = thumbnail::ensure_thumbnail(thumb_dir, source_path) {
                                 errors.lock().unwrap().push(format!("Thumbnail error for {}: {}", path_str, e));
                             }
-                            if use_thumbnail_progress {
-                                if let Some(progress) = &progress {
-                                    progress.increment();
-                                }
+                            if let Some(progress) = &progress {
+                                progress.increment();
                             }
                         }
                     });
@@ -761,6 +773,12 @@ async fn scan_directory_internal(
         // avoiding the need to reload models and enabling true parallelism.
         let (embeddings, embedding_errors): (Vec<Option<Vec<f32>>>, Vec<String>) =
             if let Some(pool) = embedding_pool {
+                // Set up scanning phase progress
+                if let Some(progress) = &progress {
+                    progress.set_phase("scanning");
+                    progress.set_total(paths_for_embeddings.len());
+                }
+
                 let num_workers = pool.len();
                 let chunk_size = (paths_for_embeddings.len() + num_workers - 1) / num_workers;
 
