@@ -96,6 +96,7 @@
 
   // Settings menu state
   let showSettingsMenu = $state(false);
+  let showFoldersModal = $state(false);
   let ocrLexical = $state(false);
   let ocrSemantic = $state(false);
 
@@ -507,6 +508,9 @@
       case "view_files":
         openAppDataFolder();
         break;
+      case "manage_folders":
+        showFoldersModal = true;
+        break;
       case "ocr_lexical":
         ocrLexical = !ocrLexical;
         break;
@@ -586,22 +590,6 @@
         {#if showSettingsMenu}
           <div class="dropdown-menu settings-menu" onclick={(e) => e.stopPropagation()}>
             <div class="menu-section">
-              <div class="menu-header">Watched Directories</div>
-              {#if watchedDirectories.length === 0}
-                <div class="menu-empty">No directories</div>
-              {:else}
-                {#each watchedDirectories as dir}
-                  <div class="dir-item">
-                    <span class="dir-path" title={dir}>{dir}</span>
-                    <button class="dir-remove" onclick={() => removeDirectory(dir)}>×</button>
-                  </div>
-                {/each}
-              {/if}
-              {#if lastScanDurationMs !== null}
-                <div class="menu-info">Last scan: {formatDuration(lastScanDurationMs)}</div>
-              {/if}
-            </div>
-            <div class="menu-section">
               <div class="menu-header">Runtime</div>
               <div class="menu-info">
                 ONNX Runtime: {ortStatus?.installed ? `✓ ${ortStatus.runtime_type?.toUpperCase() ?? "Installed"}` : "✗ Not installed"}
@@ -663,7 +651,7 @@
       {#if images.length === 0 && !isLoading}
         <div class="empty-state">
           {#if watchedDirectories.length === 0}
-            <p>No directories added. Click the gear icon to add a directory.</p>
+            <p>No directories added. Use File → Add Folder to get started.</p>
           {:else}
             <p>No images found.</p>
           {/if}
@@ -919,6 +907,41 @@
               disabled={ortDownloading}
             >
               {ortStatus?.installed ? "Close" : "Cancel"}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  {/if}
+
+  {#if showFoldersModal}
+    <div class="modal-overlay" onclick={() => showFoldersModal = false}>
+      <div class="modal" onclick={(e) => e.stopPropagation()}>
+        <div class="modal-header">
+          <span>Manage Folders</span>
+          <button class="modal-close" onclick={() => showFoldersModal = false}>×</button>
+        </div>
+        <div class="modal-body">
+          {#if watchedDirectories.length === 0}
+            <div class="folders-empty">No folders added yet.</div>
+          {:else}
+            <div class="folders-list">
+              {#each watchedDirectories as dir}
+                <div class="folder-item">
+                  <span class="folder-path" title={dir}>{dir}</span>
+                  <button class="folder-remove" onclick={() => removeDirectory(dir)}>×</button>
+                </div>
+              {/each}
+            </div>
+          {/if}
+          {#if lastScanDurationMs !== null}
+            <div class="folders-info">Last scan: {formatDuration(lastScanDurationMs)}</div>
+          {/if}
+        </div>
+        <div class="modal-footer">
+          <div class="modal-buttons">
+            <button class="modal-btn" onclick={() => showFoldersModal = false}>
+              Close
             </button>
           </div>
         </div>
@@ -1674,6 +1697,59 @@
     border: 1px solid #4a6a6a;
     border-radius: 6px;
     color: #6ac;
+    font-size: 13px;
+  }
+
+  /* Folders Modal Styles */
+  .folders-empty {
+    color: var(--text-secondary);
+    font-style: italic;
+    text-align: center;
+    padding: 20px;
+  }
+
+  .folders-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .folder-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    background: var(--bg-base);
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+  }
+
+  .folder-path {
+    flex: 1;
+    font-size: 13px;
+    font-family: monospace;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .folder-remove {
+    background: none;
+    border: none;
+    color: var(--text-secondary);
+    cursor: pointer;
+    font-size: 18px;
+    padding: 0 4px;
+    line-height: 1;
+  }
+
+  .folder-remove:hover {
+    color: #ff6b6b;
+  }
+
+  .folders-info {
+    margin-top: 12px;
+    color: var(--text-secondary);
     font-size: 13px;
   }
 

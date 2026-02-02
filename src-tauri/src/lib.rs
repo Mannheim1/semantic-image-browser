@@ -863,6 +863,7 @@ pub fn run() {
             let file_menu = SubmenuBuilder::new(app, "&File")
                 .item(&MenuItemBuilder::new("&Add Folder...").id("add_folder").accelerator("CmdOrCtrl+O").build(app)?)
                 .item(&MenuItemBuilder::new("&Rescan All").id("rescan").accelerator("CmdOrCtrl+R").build(app)?)
+                .item(&MenuItemBuilder::new("&Manage Folders...").id("manage_folders").build(app)?)
                 .separator()
                 .item(&MenuItemBuilder::new("&View Files").id("view_files").build(app)?)
                 .separator()
