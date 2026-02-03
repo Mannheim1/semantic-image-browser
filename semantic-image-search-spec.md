@@ -251,3 +251,22 @@ Text queries are tokenized using the HuggingFace tokenizer:
 ### Embedding Normalization
 
 Both image and text embeddings are L2-normalized before storage/comparison, meaning distance is equivalent to cosine similarity. LanceDB returns `_distance` for vector search; lower values mean closer matches.
+
+### Inference Backends
+
+The app supports two inference backends, selected based on the `runtime_type` setting:
+
+**CPU Backend** (`runtime_type: "cpu"`):
+- Creates multiple ONNX session instances (up to 4, limited by `MAX_EMBEDDING_WORKERS`)
+- Each thread processes images one at a time using its own model instance
+- Parallel threads compensate for lack of batching
+- Best for systems without CUDA-capable GPUs
+
+**GPU Backend** (`runtime_type: "gpu"`):
+- Creates a single ONNX session with CUDA execution provider
+- Processes images in batches (default batch size: 32)
+- Batched inference maximizes GPU utilization by keeping the GPU busy with parallel work
+- Requires CUDA 11.8+ and cuDNN
+- Significantly faster than CPU on supported hardware (e.g., 4070 Ti)
+
+**Why batching matters for GPU**: GPUs achieve high throughput through massive parallelism. Processing one image at a time leaves the GPU mostly idle waiting for CPU-GPU synchronization. Batching amortizes this overhead across many images, keeping GPU compute units saturated.
