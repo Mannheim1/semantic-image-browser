@@ -43,6 +43,8 @@ futures-util = "0.3"
 zip = "7.1"
 flate2 = "1.1"
 tar = "0.4"
+turbojpeg = "1.3.3"
+fast_image_resize = "5.5.0"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = ["Win32_System_LibraryLoader"] }

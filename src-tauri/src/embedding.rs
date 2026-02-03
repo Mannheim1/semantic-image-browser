@@ -6,6 +6,7 @@
 //! - Text tokenization
 //! - Generating embeddings for images and text queries
 
+use fast_image_resize::{images::Image as FirImage, ResizeAlg, ResizeOptions, Resizer, PixelType};
 use ort::execution_providers::CUDAExecutionProvider;
 use ort::session::Session;
 use ort::value::Value;
@@ -296,48 +297,181 @@ impl EmbeddingModel {
 /// Preprocess an image for the SigLIP2 vision model.
 ///
 /// Steps:
-/// 1. Load and decode the image
+/// 1. Load and decode the image (using turbojpeg with scaled decoding for JPEGs)
 /// 2. Convert to RGB
-/// 3. Resize to 256x256
+/// 3. Resize to 256x256 (using fast_image_resize with SIMD)
 /// 4. Convert to float and rescale to [0, 1]
 /// 5. Normalize with mean=0.5, std=0.5 (resulting in [-1, 1])
 /// 6. Return as flat NCHW format [1, 3, 256, 256] = 196608 floats
 fn preprocess_image(path: &Path) -> Result<Vec<f32>, String> {
-    // Load image
+    use std::time::Instant;
+    let start = Instant::now();
+
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_lowercase())
+        .unwrap_or_default();
+
+    // Load and decode image - use turbojpeg for JPEGs with scaled decoding
+    let (rgb_data, width, height) = if ext == "jpg" || ext == "jpeg" || ext == "jfif" {
+        decode_jpeg_scaled(path)?
+    } else {
+        decode_other_format(path)?
+    };
+    let load_time = start.elapsed();
+
+    // Resize to IMAGE_SIZE x IMAGE_SIZE using fast_image_resize (SIMD-accelerated)
+    let resize_start = Instant::now();
+    let resized_rgb = fast_resize_rgb(&rgb_data, width, height, IMAGE_SIZE, IMAGE_SIZE)?;
+    let resize_time = resize_start.elapsed();
+
+    // Convert to NCHW float tensor with normalization
+    let tensor_start = Instant::now();
+    let pixel_values = rgb_to_nchw_normalized(&resized_rgb, IMAGE_SIZE, IMAGE_SIZE);
+    let tensor_time = tensor_start.elapsed();
+
+    let total = start.elapsed();
+    if total.as_millis() > 100 {
+        println!(
+            "[preprocess] {} | load: {:?} | resize: {:?} | tensor: {:?} | total: {:?}",
+            path.file_name().unwrap_or_default().to_string_lossy(),
+            load_time,
+            resize_time,
+            tensor_time,
+            total
+        );
+    }
+
+    Ok(pixel_values)
+}
+
+/// Decode a JPEG using turbojpeg with scaled decoding.
+/// For large images, decodes at 1/2, 1/4, or 1/8 scale to reduce work.
+fn decode_jpeg_scaled(path: &Path) -> Result<(Vec<u8>, u32, u32), String> {
+    let jpeg_data = std::fs::read(path)
+        .map_err(|e| format!("Failed to read JPEG {}: {}", path.display(), e))?;
+
+    let mut decompressor = turbojpeg::Decompressor::new()
+        .map_err(|e| format!("Failed to create JPEG decompressor: {}", e))?;
+
+    // Read header to get original dimensions
+    let header = decompressor
+        .read_header(&jpeg_data)
+        .map_err(|e| format!("Failed to read JPEG header {}: {}", path.display(), e))?;
+
+    // Choose scaling factor based on image size
+    // We want the decoded image to be at least IMAGE_SIZE (256) on each dimension
+    // but as small as possible to minimize decode and resize work
+    let scaling = choose_jpeg_scale(header.width, header.height, IMAGE_SIZE as usize);
+    decompressor.set_scaling_factor(scaling);
+
+    let scaled_header = header.scaled(scaling);
+    let scaled_width = scaled_header.width;
+    let scaled_height = scaled_header.height;
+
+    // Decode directly to RGB
+    let mut rgb_data = vec![0u8; scaled_width * scaled_height * 3];
+    let image = turbojpeg::Image {
+        pixels: &mut rgb_data[..],
+        width: scaled_width,
+        pitch: scaled_width * 3,
+        height: scaled_height,
+        format: turbojpeg::PixelFormat::RGB,
+    };
+
+    decompressor
+        .decompress(&jpeg_data, image)
+        .map_err(|e| format!("Failed to decompress JPEG {}: {}", path.display(), e))?;
+
+    Ok((rgb_data, scaled_width as u32, scaled_height as u32))
+}
+
+/// Choose the best JPEG scaling factor for the target size.
+/// Returns the largest scale that produces an image >= target_size on both dimensions.
+fn choose_jpeg_scale(width: usize, height: usize, target_size: usize) -> turbojpeg::ScalingFactor {
+    let min_dim = width.min(height);
+
+    // Try scales from smallest to largest, pick the smallest that still exceeds target
+    if min_dim / 8 >= target_size {
+        turbojpeg::ScalingFactor::ONE_EIGHTH
+    } else if min_dim / 4 >= target_size {
+        turbojpeg::ScalingFactor::ONE_QUARTER
+    } else if min_dim / 2 >= target_size {
+        turbojpeg::ScalingFactor::ONE_HALF
+    } else {
+        turbojpeg::ScalingFactor::ONE
+    }
+}
+
+/// Decode non-JPEG formats using the image crate.
+fn decode_other_format(path: &Path) -> Result<(Vec<u8>, u32, u32), String> {
     let img = image::open(path)
         .map_err(|e| format!("Failed to open image {}: {}", path.display(), e))?;
 
-    // Convert to RGB
-    let img = img.to_rgb8();
+    let rgb = img.to_rgb8();
+    let width = rgb.width();
+    let height = rgb.height();
+    let rgb_data = rgb.into_raw();
 
-    // Resize to IMAGE_SIZE x IMAGE_SIZE using bilinear interpolation
-    // (resample mode 2 in preprocessor_config.json = BILINEAR)
-    let img = image::imageops::resize(
-        &img,
-        IMAGE_SIZE,
-        IMAGE_SIZE,
-        image::imageops::FilterType::Triangle, // Bilinear
-    );
+    Ok((rgb_data, width, height))
+}
 
-    // Convert to NCHW float tensor with normalization
-    // Layout: [batch=1][channel][height][width]
-    let mut pixel_values = vec![0.0f32; (1 * 3 * IMAGE_SIZE * IMAGE_SIZE) as usize];
+/// Resize RGB image data using fast_image_resize (SIMD-accelerated).
+fn fast_resize_rgb(
+    rgb_data: &[u8],
+    src_width: u32,
+    src_height: u32,
+    dst_width: u32,
+    dst_height: u32,
+) -> Result<Vec<u8>, String> {
+    if src_width == 0 || src_height == 0 || dst_width == 0 || dst_height == 0 {
+        return Err("Invalid image dimensions".to_string());
+    }
+
+    // Create source image - need owned copy since from_slice_u8 requires mutable
+    let mut rgb_copy = rgb_data.to_vec();
+    let src_image = FirImage::from_slice_u8(
+        src_width,
+        src_height,
+        &mut rgb_copy,
+        PixelType::U8x3,
+    )
+    .map_err(|e| format!("Failed to create source image: {}", e))?;
+
+    // Create destination image
+    let mut dst_image = FirImage::new(dst_width, dst_height, PixelType::U8x3);
+
+    // Create resizer with bilinear algorithm (matches SigLIP2 preprocessing)
+    let mut resizer = Resizer::new();
+    let options = ResizeOptions::new().resize_alg(ResizeAlg::Convolution(
+        fast_image_resize::FilterType::Bilinear,
+    ));
+
+    resizer
+        .resize(&src_image, &mut dst_image, Some(&options))
+        .map_err(|e| format!("Failed to resize image: {}", e))?;
+
+    Ok(dst_image.into_vec())
+}
+
+/// Convert RGB u8 data to NCHW float tensor with normalization.
+fn rgb_to_nchw_normalized(rgb_data: &[u8], width: u32, height: u32) -> Vec<f32> {
+    let mut pixel_values = vec![0.0f32; (3 * width * height) as usize];
 
     for c in 0..3 {
-        for y in 0..IMAGE_SIZE as usize {
-            for x in 0..IMAGE_SIZE as usize {
-                let pixel = img.get_pixel(x as u32, y as u32);
-                // Rescale [0, 255] -> [0, 1] then normalize: (x - mean) / std
-                let value = pixel[c] as f32 / 255.0;
+        for y in 0..height as usize {
+            for x in 0..width as usize {
+                let src_idx = (y * width as usize + x) * 3 + c;
+                let value = rgb_data[src_idx] as f32 / 255.0;
                 let normalized = (value - IMAGE_MEAN[c]) / IMAGE_STD[c];
-                // Index: batch * (C*H*W) + channel * (H*W) + y * W + x
-                let idx = c * (IMAGE_SIZE * IMAGE_SIZE) as usize + y * IMAGE_SIZE as usize + x;
-                pixel_values[idx] = normalized;
+                let dst_idx = c * (width * height) as usize + y * width as usize + x;
+                pixel_values[dst_idx] = normalized;
             }
         }
     }
 
-    Ok(pixel_values)
+    pixel_values
 }
 
 /// L2 normalize a vector.
@@ -347,6 +481,257 @@ fn l2_normalize(v: &[f32]) -> Vec<f32> {
         v.iter().map(|x| x / norm).collect()
     } else {
         v.to_vec()
+    }
+}
+
+/// Default batch size for GPU inference.
+/// 32 is a good balance for a 4070 Ti (12GB VRAM).
+/// Each image at 256x256 float32 RGB = ~768KB, so 32 images = ~24MB batch tensor.
+pub const GPU_BATCH_SIZE: usize = 32;
+
+/// GPU-optimized embedding model that processes images in batches.
+/// Uses a single ONNX session to maximize GPU utilization.
+pub struct GpuEmbeddingModel {
+    vision_session: Session,
+    text_session: Session,
+    tokenizer: Tokenizer,
+}
+
+impl GpuEmbeddingModel {
+    /// Load the embedding model for GPU batched inference.
+    ///
+    /// Unlike EmbeddingModel which creates multiple instances for CPU parallelism,
+    /// GpuEmbeddingModel uses a single session since the GPU handles parallelism internally.
+    pub fn load(model_dir: &Path) -> Result<Self, String> {
+        let vision_path = model_dir.join("onnx").join("vision_model.onnx");
+        let text_path = model_dir.join("onnx").join("text_model.onnx");
+        let tokenizer_path = model_dir.join("tokenizer.json");
+
+        // Verify files exist
+        if !vision_path.exists() {
+            return Err(format!("Vision model not found: {}", vision_path.display()));
+        }
+        if !text_path.exists() {
+            return Err(format!("Text model not found: {}", text_path.display()));
+        }
+        if !tokenizer_path.exists() {
+            return Err(format!("Tokenizer not found: {}", tokenizer_path.display()));
+        }
+
+        // Load vision model with CUDA
+        let vision_session = Session::builder()
+            .map_err(|e| format!("Failed to create vision session builder: {}", e))?
+            .with_execution_providers([CUDAExecutionProvider::default().build().error_on_failure()])
+            .map_err(|e| format!("Failed to register CUDA execution provider for vision model: {}. Make sure CUDA 11.8+ and cuDNN are installed.", e))?
+            .commit_from_file(&vision_path)
+            .map_err(|e| format!("Failed to load vision model: {}", e))?;
+
+        // Load text model with CUDA
+        let text_session = Session::builder()
+            .map_err(|e| format!("Failed to create text session builder: {}", e))?
+            .with_execution_providers([CUDAExecutionProvider::default().build().error_on_failure()])
+            .map_err(|e| format!("Failed to register CUDA execution provider for text model: {}. Make sure CUDA 11.8+ and cuDNN are installed.", e))?
+            .commit_from_file(&text_path)
+            .map_err(|e| format!("Failed to load text model: {}", e))?;
+
+        // Load tokenizer
+        let tokenizer = Tokenizer::from_file(&tokenizer_path)
+            .map_err(|e| format!("Failed to load tokenizer: {}", e))?;
+
+        println!("Loaded GPU embedding model (single session for batched inference)");
+        Ok(Self {
+            vision_session,
+            text_session,
+            tokenizer,
+        })
+    }
+
+    /// Generate embeddings for a batch of images.
+    ///
+    /// This is the primary method for GPU inference - processing multiple images
+    /// in a single forward pass maximizes GPU utilization.
+    ///
+    /// Returns a Vec of Results, one per input image, preserving order.
+    /// Individual images may fail (e.g., corrupt file) without affecting others.
+    pub fn embed_images_batch(&mut self, image_paths: &[&Path]) -> Vec<Result<Vec<f32>, String>> {
+        use std::time::Instant;
+
+        if image_paths.is_empty() {
+            return Vec::new();
+        }
+
+        let batch_start_time = Instant::now();
+
+        // Preprocess all images, tracking which ones succeeded
+        let preprocess_start = Instant::now();
+        let mut pixel_data: Vec<f32> = Vec::with_capacity(image_paths.len() * 3 * (IMAGE_SIZE * IMAGE_SIZE) as usize);
+        let mut valid_indices: Vec<usize> = Vec::with_capacity(image_paths.len());
+        let mut results: Vec<Result<Vec<f32>, String>> = vec![Err("Not processed".to_string()); image_paths.len()];
+
+        for (idx, path) in image_paths.iter().enumerate() {
+            match preprocess_image(path) {
+                Ok(pixels) => {
+                    pixel_data.extend(pixels);
+                    valid_indices.push(idx);
+                }
+                Err(e) => {
+                    results[idx] = Err(e);
+                }
+            }
+        }
+        let preprocess_time = preprocess_start.elapsed();
+
+        if valid_indices.is_empty() {
+            return results;
+        }
+
+        // Run batched inference
+        let tensor_start = Instant::now();
+        let batch_size = valid_indices.len() as i64;
+        let shape = [batch_size, 3, IMAGE_SIZE as i64, IMAGE_SIZE as i64];
+
+        let input_tensor = match Value::from_array((shape, pixel_data)) {
+            Ok(t) => t,
+            Err(e) => {
+                let err = format!("Failed to create batched vision input tensor: {}", e);
+                for &idx in &valid_indices {
+                    results[idx] = Err(err.clone());
+                }
+                return results;
+            }
+        };
+        let tensor_time = tensor_start.elapsed();
+
+        let inference_start = Instant::now();
+        let outputs = match self.vision_session.run(ort::inputs!["pixel_values" => input_tensor]) {
+            Ok(o) => o,
+            Err(e) => {
+                let err = format!("Batched vision inference failed: {}", e);
+                for &idx in &valid_indices {
+                    results[idx] = Err(err.clone());
+                }
+                return results;
+            }
+        };
+        let inference_time = inference_start.elapsed();
+
+        let postprocess_start = Instant::now();
+        let pooler_output = match outputs.get("pooler_output") {
+            Some(o) => o,
+            None => {
+                let err = "pooler_output not found in vision model outputs".to_string();
+                for &idx in &valid_indices {
+                    results[idx] = Err(err.clone());
+                }
+                return results;
+            }
+        };
+
+        let (_shape, data) = match pooler_output.try_extract_tensor::<f32>() {
+            Ok(d) => d,
+            Err(e) => {
+                let err = format!("Failed to extract batched pooler_output tensor: {}", e);
+                for &idx in &valid_indices {
+                    results[idx] = Err(err.clone());
+                }
+                return results;
+            }
+        };
+
+        // Split the batched output into individual embeddings
+        // data is a CowArray, iterate to extract each embedding
+        let embedding_dim = VISUAL_EMBEDDING_DIM as usize;
+        let flat_data: Vec<f32> = data.iter().copied().collect();
+        for (batch_idx, &original_idx) in valid_indices.iter().enumerate() {
+            let start = batch_idx * embedding_dim;
+            let end = start + embedding_dim;
+            if end <= flat_data.len() {
+                let embedding: Vec<f32> = flat_data[start..end].to_vec();
+                results[original_idx] = Ok(l2_normalize(&embedding));
+            } else {
+                results[original_idx] = Err(format!(
+                    "Embedding index out of bounds: expected {}..{}, got len {}",
+                    start, end, flat_data.len()
+                ));
+            }
+        }
+        let postprocess_time = postprocess_start.elapsed();
+
+        let total_time = batch_start_time.elapsed();
+        println!(
+            "[GPU Batch] {} images | preprocess: {:?} | tensor: {:?} | inference: {:?} | postprocess: {:?} | total: {:?}",
+            image_paths.len(),
+            preprocess_time,
+            tensor_time,
+            inference_time,
+            postprocess_time,
+            total_time
+        );
+
+        results
+    }
+
+    /// Generate an embedding for a text query.
+    ///
+    /// Text queries are typically single items, so no batching needed here.
+    pub fn embed_text(&mut self, query: &str) -> Result<Vec<f32>, String> {
+        let input_ids = self.tokenize(query)?;
+
+        // Create input tensor with shape [1, sequence_length]
+        let shape = [1_i64, input_ids.len() as i64];
+        let input_tensor = Value::from_array((shape, input_ids))
+            .map_err(|e| format!("Failed to create text input tensor: {}", e))?;
+
+        let outputs = self
+            .text_session
+            .run(ort::inputs!["input_ids" => input_tensor])
+            .map_err(|e| format!("Text inference failed: {}", e))?;
+
+        let pooler_output = outputs
+            .get("pooler_output")
+            .ok_or("pooler_output not found in text model outputs")?;
+
+        let (_shape, data) = pooler_output
+            .try_extract_tensor::<f32>()
+            .map_err(|e| format!("Failed to extract pooler_output tensor: {}", e))?;
+
+        let embedding: Vec<f32> = data.iter().copied().collect();
+
+        if embedding.len() != VISUAL_EMBEDDING_DIM as usize {
+            return Err(format!(
+                "Unexpected embedding dimension: expected {}, got {}",
+                VISUAL_EMBEDDING_DIM,
+                embedding.len()
+            ));
+        }
+
+        Ok(l2_normalize(&embedding))
+    }
+
+    /// Tokenize text for the model.
+    fn tokenize(&self, text: &str) -> Result<Vec<i64>, String> {
+        let text_lower = text.to_lowercase();
+
+        let encoding = self
+            .tokenizer
+            .encode(text_lower, true)
+            .map_err(|e| format!("Tokenization failed: {}", e))?;
+
+        let mut ids: Vec<i64> = encoding
+            .get_ids()
+            .iter()
+            .map(|&id| id as i64)
+            .collect();
+
+        if ids.len() > MAX_SEQ_LENGTH {
+            ids.truncate(MAX_SEQ_LENGTH);
+        }
+
+        while ids.len() < MAX_SEQ_LENGTH {
+            ids.push(0);
+        }
+
+        Ok(ids)
     }
 }
 

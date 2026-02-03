@@ -19,23 +19,46 @@ mod thumbnail;
 
 use config::AppConfig;
 use database::{FilterOptions, ImageInfo, ImageRecord, SortOptions};
-use embedding::EmbeddingModel;
+use embedding::{EmbeddingModel, GpuEmbeddingModel, GPU_BATCH_SIZE};
 
 /// Maximum number of embedding model instances to keep in the pool.
 /// This limits RAM usage (~500MB per model) while enabling parallel processing.
 /// 4 workers = ~2GB for models, which is reasonable for most systems.
 const MAX_EMBEDDING_WORKERS: usize = 4;
 
+/// Holds either a CPU embedding pool or a GPU embedding model.
+/// CPU mode uses multiple model instances for thread-parallel inference.
+/// GPU mode uses a single model with batched inference for maximum GPU utilization.
+pub enum EmbeddingBackend {
+    Cpu(EmbeddingPool),
+    Gpu(Mutex<GpuEmbeddingModel>),
+}
+
+impl EmbeddingBackend {
+    /// Embed text using whichever backend is available.
+    pub fn embed_text(&self, text: &str) -> Result<Vec<f32>, String> {
+        match self {
+            EmbeddingBackend::Cpu(pool) => pool.embed_text(text),
+            EmbeddingBackend::Gpu(model) => {
+                let mut guard = model.lock().map_err(|e| format!("Failed to lock GPU model: {}", e))?;
+                guard.embed_text(text)
+            }
+        }
+    }
+
+    /// Returns true if this is the GPU backend.
+    pub fn is_gpu(&self) -> bool {
+        matches!(self, EmbeddingBackend::Gpu(_))
+    }
+}
+
 pub struct AppState {
     pub db: Connection,
     pub table: tokio::sync::Mutex<Table>,
-    /// Pool of embedding models for parallel processing.
-    /// Each model is wrapped in Mutex because inference requires &mut self.
-    /// Models are loaded once at startup and reused across scans to avoid
-    /// repeated disk reads and memory allocation.
+    /// Embedding backend - either CPU pool or GPU model.
     /// Wrapped in RwLock<Option<Arc<...>>> to allow async initialization after app starts.
     /// Arc allows cloning a reference to use across await points.
-    pub embedding_pool: RwLock<Option<Arc<EmbeddingPool>>>,
+    pub embedding_backend: RwLock<Option<Arc<EmbeddingBackend>>>,
     /// Model identifier (e.g., "siglip2-base-patch16-256") for database storage.
     /// Wrapped in RwLock to allow async initialization after app starts.
     pub model_id: RwLock<Option<String>>,
@@ -303,7 +326,7 @@ async fn set_model_config(app: AppHandle, ort_dylib_path: String, model_dir: Str
 
 #[tauri::command]
 fn get_embedding_model_status(state: tauri::State<'_, AppState>) -> bool {
-    state.embedding_pool.read().map(|p| p.is_some()).unwrap_or(false)
+    state.embedding_backend.read().map(|p| p.is_some()).unwrap_or(false)
 }
 
 #[tauri::command]
@@ -321,13 +344,13 @@ async fn add_watched_directory(app: AppHandle, state: tauri::State<'_, AppState>
 
     let progress = ScanProgressState::new(&app);
     // Clone Arc and String out of the locks before the await point
-    let embedding_pool = state.embedding_pool.read().map_err(|e| e.to_string())?.clone();
+    let embedding_backend = state.embedding_backend.read().map_err(|e| e.to_string())?.clone();
     let model_id = state.model_id.read().map_err(|e| e.to_string())?.clone();
     let (result, _) = scan_directory_internal(
         &table,
         &thumb_dir,
         &path,
-        embedding_pool.as_deref(),
+        embedding_backend.as_deref(),
         model_id.as_deref(),
         Some(progress),
     ).await?;
@@ -376,14 +399,14 @@ async fn rescan_all(app: AppHandle, state: tauri::State<'_, AppState>) -> Result
     let mut all_seen_paths: HashSet<String> = HashSet::new();
 
     // Clone Arc and String out of the locks before the await points
-    let embedding_pool = state.embedding_pool.read().map_err(|e| e.to_string())?.clone();
+    let embedding_backend = state.embedding_backend.read().map_err(|e| e.to_string())?.clone();
     let model_id = state.model_id.read().map_err(|e| e.to_string())?.clone();
     for dir in &cfg.watched_directories {
         match scan_directory_internal(
             &table,
             &thumb_dir,
             dir,
-            embedding_pool.as_deref(),
+            embedding_backend.as_deref(),
             model_id.as_deref(),
             Some(progress.clone()),
         ).await {
@@ -472,10 +495,10 @@ async fn search_images(state: tauri::State<'_, AppState>, query: String) -> Resu
         return Ok(results);
     }
 
-    // Try to generate text embedding using the pool
-    let query_embedding = if let Ok(pool_guard) = state.embedding_pool.read() {
-        if let Some(pool) = pool_guard.as_ref() {
-            match pool.embed_text(&query) {
+    // Try to generate text embedding using the backend
+    let query_embedding = if let Ok(backend_guard) = state.embedding_backend.read() {
+        if let Some(backend) = backend_guard.as_ref() {
+            match backend.embed_text(&query) {
                 Ok(emb) => Some(emb),
                 Err(e) => {
                     eprintln!("Text embedding failed, falling back to filename search: {}", e);
@@ -528,9 +551,9 @@ async fn search_images_filtered(
 
     // Generate text embedding for the query if available
     let query_embedding = if !query.trim().is_empty() {
-        if let Ok(pool_guard) = state.embedding_pool.read() {
-            if let Some(pool) = pool_guard.as_ref() {
-                match pool.embed_text(&query) {
+        if let Ok(backend_guard) = state.embedding_backend.read() {
+            if let Some(backend) = backend_guard.as_ref() {
+                match backend.embed_text(&query) {
                     Ok(emb) => Some(emb),
                     Err(e) => {
                         eprintln!("Text embedding failed: {}", e);
@@ -679,7 +702,7 @@ async fn scan_directory_internal(
     table: &lancedb::Table,
     thumb_dir: &Path,
     dir: &str,
-    embedding_pool: Option<&EmbeddingPool>,
+    embedding_backend: Option<&EmbeddingBackend>,
     model_id: Option<&str>,
     progress: Option<ScanProgressState>,
 ) -> Result<(ScanResult, HashSet<String>), String> {
@@ -786,74 +809,120 @@ async fn scan_directory_internal(
             .collect();
         let progress_for_embeddings = progress.clone();
 
-        // Generate embeddings using the pre-loaded model pool.
-        // Each worker thread uses its own model instance from the pool,
-        // avoiding the need to reload models and enabling true parallelism.
+        // Generate embeddings using either CPU or GPU backend.
+        // CPU: Multiple model instances with thread-parallel inference (one image at a time per thread).
+        // GPU: Single model with batched inference (multiple images per forward pass).
         let (embeddings, embedding_errors): (Vec<Option<Vec<f32>>>, Vec<String>) =
-            if let Some(pool) = embedding_pool {
+            if let Some(backend) = embedding_backend {
                 // Set up scanning phase progress
                 if let Some(progress) = &progress {
                     progress.set_phase("scanning");
                     progress.set_total(paths_for_embeddings.len());
                 }
 
-                let num_workers = pool.len();
-                let chunk_size = (paths_for_embeddings.len() + num_workers - 1) / num_workers;
+                match backend {
+                    EmbeddingBackend::Cpu(pool) => {
+                        // CPU mode: parallel workers, each processing images one at a time
+                        let num_workers = pool.len();
+                        let chunk_size = (paths_for_embeddings.len() + num_workers - 1) / num_workers;
 
-                let results = std::sync::Mutex::new(vec![None; paths_for_embeddings.len()]);
-                let errors = std::sync::Mutex::new(Vec::new());
+                        let results = std::sync::Mutex::new(vec![None; paths_for_embeddings.len()]);
+                        let errors = std::sync::Mutex::new(Vec::new());
 
-                std::thread::scope(|s| {
-                    for (worker_idx, chunk) in paths_for_embeddings.chunks(chunk_size).enumerate() {
-                        let errors = &errors;
-                        let results = &results;
-                        let start = worker_idx * chunk_size;
-                        let chunk = chunk.to_vec();
-                        let progress = progress_for_embeddings.clone();
+                        std::thread::scope(|s| {
+                            for (worker_idx, chunk) in paths_for_embeddings.chunks(chunk_size).enumerate() {
+                                let errors = &errors;
+                                let results = &results;
+                                let start = worker_idx * chunk_size;
+                                let chunk = chunk.to_vec();
+                                let progress = progress_for_embeddings.clone();
 
-                        // Each worker gets its own model from the pool
-                        let model_mutex = match pool.get(worker_idx) {
-                            Some(m) => m,
-                            None => continue, // Shouldn't happen, but be safe
+                                let model_mutex = match pool.get(worker_idx) {
+                                    Some(m) => m,
+                                    None => continue,
+                                };
+
+                                s.spawn(move || {
+                                    let mut model = match model_mutex.lock() {
+                                        Ok(m) => m,
+                                        Err(e) => {
+                                            errors.lock().unwrap().push(format!(
+                                                "Failed to lock embedding model {}: {}",
+                                                worker_idx, e
+                                            ));
+                                            return;
+                                        }
+                                    };
+
+                                    for (offset, path) in chunk.iter().enumerate() {
+                                        let image_path = Path::new(path);
+                                        match model.embed_image(image_path) {
+                                            Ok(emb) => {
+                                                results.lock().unwrap()[start + offset] = Some(emb);
+                                            }
+                                            Err(e) => {
+                                                errors
+                                                    .lock()
+                                                    .unwrap()
+                                                    .push(format!("Embedding error for {}: {}", path, e));
+                                            }
+                                        }
+                                        if let Some(progress) = &progress {
+                                            progress.increment();
+                                        }
+                                    }
+                                });
+                            }
+                        });
+
+                        (results.into_inner().unwrap(), errors.into_inner().unwrap())
+                    }
+                    EmbeddingBackend::Gpu(model_mutex) => {
+                        // GPU mode: batched inference for maximum GPU utilization
+                        let mut results: Vec<Option<Vec<f32>>> = vec![None; paths_for_embeddings.len()];
+                        let mut errors: Vec<String> = Vec::new();
+
+                        // Lock the GPU model for the entire embedding phase
+                        let mut model = match model_mutex.lock() {
+                            Ok(m) => m,
+                            Err(e) => {
+                                let err = format!("Failed to lock GPU embedding model: {}", e);
+                                return Err(err);
+                            }
                         };
 
-                        s.spawn(move || {
-                            // Lock this worker's model for the duration of processing its chunk
-                            let mut model = match model_mutex.lock() {
-                                Ok(m) => m,
-                                Err(e) => {
-                                    errors.lock().unwrap().push(format!(
-                                        "Failed to lock embedding model {}: {}",
-                                        worker_idx, e
-                                    ));
-                                    return;
-                                }
-                            };
+                        // Process images in batches
+                        for batch_start in (0..paths_for_embeddings.len()).step_by(GPU_BATCH_SIZE) {
+                            let batch_end = (batch_start + GPU_BATCH_SIZE).min(paths_for_embeddings.len());
+                            let batch_paths: Vec<&Path> = paths_for_embeddings[batch_start..batch_end]
+                                .iter()
+                                .map(|p| Path::new(p.as_str()))
+                                .collect();
 
-                            for (offset, path) in chunk.iter().enumerate() {
-                                let image_path = Path::new(path);
-                                match model.embed_image(image_path) {
+                            let batch_results = model.embed_images_batch(&batch_paths);
+
+                            for (offset, result) in batch_results.into_iter().enumerate() {
+                                let idx = batch_start + offset;
+                                match result {
                                     Ok(emb) => {
-                                        results.lock().unwrap()[start + offset] = Some(emb);
+                                        results[idx] = Some(emb);
                                     }
                                     Err(e) => {
-                                        errors
-                                            .lock()
-                                            .unwrap()
-                                            .push(format!("Embedding error for {}: {}", path, e));
+                                        errors.push(format!(
+                                            "Embedding error for {}: {}",
+                                            paths_for_embeddings[idx], e
+                                        ));
                                     }
                                 }
-                                if let Some(progress) = &progress {
+                                if let Some(progress) = &progress_for_embeddings {
                                     progress.increment();
                                 }
                             }
-                        });
-                    }
-                });
+                        }
 
-                let errors = errors.into_inner().unwrap();
-                let results = results.into_inner().unwrap();
-                (results, errors)
+                        (results, errors)
+                    }
+                }
             } else {
                 (vec![None; paths_for_embeddings.len()], Vec::new())
             };
@@ -974,11 +1043,11 @@ pub fn run() {
             })
             .expect("Failed to initialize database");
 
-            // Register AppState with empty embedding pool (will be populated async)
+            // Register AppState with empty embedding backend (will be populated async)
             handle.manage(AppState {
                 db,
                 table: tokio::sync::Mutex::new(table),
-                embedding_pool: RwLock::new(None), // Will be Some(Arc<EmbeddingPool>) after async init
+                embedding_backend: RwLock::new(None), // Will be Some(Arc<EmbeddingBackend>) after async init
                 model_id: RwLock::new(None),
             });
 
@@ -1020,8 +1089,8 @@ pub fn run() {
                 // Check if GPU runtime is configured
                 let use_gpu = cfg_for_task.runtime_type.as_deref() == Some("gpu");
 
-                // Try to load the embedding model pool if ORT and model are available
-                let (embedding_pool, model_id) = match (ort_path, &cfg_for_task.model_dir) {
+                // Try to load the embedding backend if ORT and model are available
+                let (embedding_backend, model_id) = match (ort_path, &cfg_for_task.model_dir) {
                     (Some(ort_path), Some(model_path)) => {
                         let model_path = Path::new(model_path);
 
@@ -1035,17 +1104,31 @@ pub fn run() {
                         if let Err(e) = embedding::init_ort(&ort_path) {
                             eprintln!("Warning: Failed to initialize ONNX Runtime: {}", e);
                             (None, None)
+                        } else if use_gpu {
+                            // GPU mode: single model with batched inference
+                            match GpuEmbeddingModel::load(model_path) {
+                                Ok(model) => {
+                                    println!("Using GPU backend with batched inference (batch size: {})", GPU_BATCH_SIZE);
+                                    (Some(Arc::new(EmbeddingBackend::Gpu(Mutex::new(model)))), model_id)
+                                }
+                                Err(e) => {
+                                    eprintln!("Warning: Failed to load GPU embedding model: {}", e);
+                                    (None, None)
+                                }
+                            }
                         } else {
-                            // Determine number of workers (capped at MAX_EMBEDDING_WORKERS)
+                            // CPU mode: pool of models for thread-parallel inference
                             let num_workers = std::thread::available_parallelism()
                                 .map(|n| n.get().min(MAX_EMBEDDING_WORKERS))
                                 .unwrap_or(2);
 
-                            // Load the model pool
-                            match EmbeddingPool::new(model_path, num_workers, use_gpu) {
-                                Ok(pool) => (Some(Arc::new(pool)), model_id),
+                            match EmbeddingPool::new(model_path, num_workers, false) {
+                                Ok(pool) => {
+                                    println!("Using CPU backend with {} parallel workers", pool.len());
+                                    (Some(Arc::new(EmbeddingBackend::Cpu(pool))), model_id)
+                                }
                                 Err(e) => {
-                                    eprintln!("Warning: Failed to load embedding model pool: {}", e);
+                                    eprintln!("Warning: Failed to load CPU embedding model pool: {}", e);
                                     (None, None)
                                 }
                             }
@@ -1061,10 +1144,10 @@ pub fn run() {
                     }
                 };
 
-                // Update the AppState with loaded models
+                // Update the AppState with loaded backend
                 if let Some(state) = handle_for_task.try_state::<AppState>() {
-                    if let Ok(mut pool_guard) = state.embedding_pool.write() {
-                        *pool_guard = embedding_pool;
+                    if let Ok(mut backend_guard) = state.embedding_backend.write() {
+                        *backend_guard = embedding_backend;
                     }
                     if let Ok(mut id_guard) = state.model_id.write() {
                         *id_guard = model_id;
