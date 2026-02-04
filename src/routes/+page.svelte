@@ -75,6 +75,7 @@
   let ocrLexical = $state(false);
   let ocrSemantic = $state(false);
   let showAboutModal = $state(false);
+  let showViewControlsModal = $state(false);
 
   // Sort state
   type SortField = "relevance" | "created_at" | "modified_at" | "file_size";
@@ -485,6 +486,9 @@
       case "about":
         showAboutModal = true;
         break;
+      case "view_controls":
+        showViewControlsModal = true;
+        break;
     }
   }
 </script>
@@ -778,12 +782,31 @@
           <button class="modal-close" onclick={() => showAboutModal = false}>×</button>
         </div>
         <div class="modal-body">
-          <p class="about-text">
+          <p class="text">
             Semantic Image Search helps you find images using natural-language queries by indexing local folders,
             generating thumbnails, and ranking results with visual embeddings. The app is built with Tauri v2 and
             a Svelte + TypeScript frontend, with a Rust backend that uses LanceDB for vector search, ONNX Runtime
             for model inference, and Tesseract for OCR.
           </p>
+        </div>
+      </div>
+    </div>
+  {/if}
+
+  {#if showViewControlsModal}
+    <div class="modal-overlay" onclick={() => showViewControlsModal = false}>
+      <div class="modal" onclick={(e) => e.stopPropagation()}>
+        <div class="modal-header">
+          <span>View Controls</span>
+          <button class="modal-close" onclick={() => showViewControlsModal = false}>×</button>
+        </div>
+        <div class="modal-body">
+          <div class="text">
+            <div>Click a thumbnail to open the detail side panel.</div>
+            <div>Double-click a thumbnail to open the image in your default viewer.</div>
+            <div>Right-click a thumbnail to open the context menu.</div>
+            <div>With the panel open, use Left/Right arrow keys to move to the previous or next image.</div>
+          </div>
         </div>
       </div>
     </div>
@@ -1500,7 +1523,7 @@
     color: #ff6b6b;
   }
 
-  .about-text {
+  .text {
     margin: 0;
     color: var(--text-secondary);
     line-height: 1.5;
