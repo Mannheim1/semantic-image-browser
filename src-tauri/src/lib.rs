@@ -1010,6 +1010,7 @@ pub fn run() {
 
             let help_menu = SubmenuBuilder::new(app, "&Help")
                 .item(&MenuItemBuilder::new("&About").id("about").build(app)?)
+                .item(&MenuItemBuilder::new("View &Controls").id("view_controls").build(app)?)
                 .build()?;
 
             let menu = if cfg.debug_mode {
