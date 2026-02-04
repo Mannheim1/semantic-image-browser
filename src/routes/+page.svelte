@@ -74,6 +74,7 @@
   let showFoldersModal = $state(false);
   let ocrLexical = $state(false);
   let ocrSemantic = $state(false);
+  let showAboutModal = $state(false);
 
   // Sort state
   type SortField = "relevance" | "created_at" | "modified_at" | "file_size";
@@ -481,6 +482,9 @@
         sortAscending = false;
         search(searchQuery);
         break;
+      case "about":
+        showAboutModal = true;
+        break;
     }
   }
 </script>
@@ -761,6 +765,25 @@
               {/each}
             </div>
           {/if}
+        </div>
+      </div>
+    </div>
+  {/if}
+
+  {#if showAboutModal}
+    <div class="modal-overlay" onclick={() => showAboutModal = false}>
+      <div class="modal" onclick={(e) => e.stopPropagation()}>
+        <div class="modal-header">
+          <span>About</span>
+          <button class="modal-close" onclick={() => showAboutModal = false}>×</button>
+        </div>
+        <div class="modal-body">
+          <p class="about-text">
+            Semantic Image Search helps you find images using natural-language queries by indexing local folders,
+            generating thumbnails, and ranking results with visual embeddings. The app is built with Tauri v2 and
+            a Svelte + TypeScript frontend, with a Rust backend that uses LanceDB for vector search, ONNX Runtime
+            for model inference, and Tesseract for OCR.
+          </p>
         </div>
       </div>
     </div>
@@ -1475,6 +1498,13 @@
 
   .folder-remove:hover {
     color: #ff6b6b;
+  }
+
+  .about-text {
+    margin: 0;
+    color: var(--text-secondary);
+    line-height: 1.5;
+    font-size: 13px;
   }
 
 </style>
