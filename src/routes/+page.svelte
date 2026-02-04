@@ -69,8 +69,6 @@
   let ortDownloadError = $state<string | null>(null);
   let selectedRuntimeType = $state<"cpu" | "gpu">("cpu");
 
-  // Settings menu state
-  let showSettingsMenu = $state(false);
   let showFoldersModal = $state(false);
   let ocrLexical = $state(false);
   let ocrSemantic = $state(false);
@@ -186,7 +184,6 @@
 
   async function openOrtModal() {
     showOrtModal = true;
-    showSettingsMenu = false;
     ortDownloadError = null;
     ortDownloadProgress = null;
     // Refresh status
@@ -368,7 +365,6 @@
 
   function handleWindowClick() {
     closeContextMenu();
-    showSettingsMenu = false;
   }
 
   function getFilename(path: string): string {
@@ -448,6 +444,9 @@
       case "ocr_semantic":
         ocrSemantic = !ocrSemantic;
         break;
+      case "model_settings":
+        openOrtModal();
+        break;
       case "sort_relevance":
         sortField = "relevance";
         sortAscending = true;
@@ -520,30 +519,6 @@
       />
     </div>
 
-    <div class="toolbar-buttons">
-      <div class="dropdown">
-        <button
-          class="toolbar-btn gear-btn"
-          onclick={(e) => { e.stopPropagation(); showSettingsMenu = !showSettingsMenu; }}
-        >
-          &#9881;
-        </button>
-        {#if showSettingsMenu}
-          <div class="dropdown-menu settings-menu" onclick={(e) => e.stopPropagation()}>
-            <div class="menu-section">
-              <div class="menu-header">Runtime</div>
-              <div class="menu-info">
-                ONNX Runtime: {ortStatus?.installed ? `✓ ${ortStatus.runtime_type?.toUpperCase() ?? "Installed"}` : "✗ Not installed"}
-              </div>
-              <div class="menu-info">Embedding model: {embeddingModelLoaded ? "✓ Loaded" : "✗ Not configured"}</div>
-              <button class="menu-btn" onclick={openOrtModal}>
-                {ortStatus?.installed ? "Manage Runtime" : "Setup Runtime"}
-              </button>
-            </div>
-          </div>
-        {/if}
-      </div>
-    </div>
   </header>
 
   <div class="results-row" bind:this={resultsRowEl}>
@@ -906,99 +881,21 @@
     font-style: italic;
   }
 
-  .toolbar-buttons {
-    display: flex;
-    gap: 4px;
-  }
-
-  .toolbar-btn {
-    height: 34px;
-    padding: 0 12px;
-    background: var(--bg-base);
-    border: 1px solid var(--border-color);
-    border-radius: 4px;
-    color: var(--text-primary);
-    cursor: pointer;
-    font-size: 13px;
-    box-sizing: border-box;
-  }
-
-  .toolbar-btn:hover {
-    background: var(--bg-hover);
-  }
-
-  .gear-btn {
-    font-size: 16px;
-    width: 34px;
-    padding: 0;
-  }
-
-  .dropdown {
-    position: relative;
-  }
-
-  .dropdown-menu {
-    position: absolute;
-    top: 100%;
-    right: 0;
-    margin-top: 4px;
-    background: var(--bg-toolbar);
-    border: 1px solid var(--border-color);
-    border-radius: 4px;
-    min-width: 120px;
-    z-index: 100;
-    box-shadow: 0 4px 12px rgba(0,0,0,0.3);
-  }
 
 
-  .settings-menu {
-    min-width: 280px;
-    padding: 8px 0;
-  }
-
-  .menu-section {
-    padding: 8px 12px;
-    border-bottom: 1px solid var(--border-color);
-  }
-
-  .menu-section:last-child {
-    border-bottom: none;
-  }
-
-  .menu-header {
-    font-size: 11px;
-    text-transform: uppercase;
-    color: var(--text-secondary);
-    margin-bottom: 8px;
-  }
 
 
-  .menu-info {
-    color: var(--text-secondary);
-    font-size: 13px;
-  }
 
-  .menu-btn {
-    display: block;
-    width: 100%;
-    padding: 6px 10px;
-    margin-top: 6px;
-    background: var(--bg-base);
-    border: 1px solid var(--border-color);
-    border-radius: 4px;
-    color: var(--text-primary);
-    cursor: pointer;
-    font-size: 13px;
-  }
 
-  .menu-btn:hover:not(:disabled) {
-    background: var(--bg-hover);
-  }
 
-  .menu-btn:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-  }
+
+
+
+
+
+
+
+
 
 
   .grid-container {
