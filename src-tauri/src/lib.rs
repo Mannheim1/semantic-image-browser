@@ -995,6 +995,10 @@ pub fn run() {
                 .item(&CheckMenuItemBuilder::new("&Semantic OCR").id("ocr_semantic").build(app)?)
                 .build()?;
 
+            let model_menu = SubmenuBuilder::new(app, "&Model")
+                .item(&MenuItemBuilder::new("&Runtime settings...").id("model_settings").build(app)?)
+                .build()?;
+
             let view_menu = SubmenuBuilder::new(app, "&View")
                 .item(&MenuItemBuilder::new("&Relevance").id("sort_relevance").build(app)?)
                 .separator()
@@ -1018,11 +1022,11 @@ pub fn run() {
                     .item(&MenuItemBuilder::new("Debug mode enabled").id("debug_mode_enabled").build(app)?)
                     .build()?;
                 MenuBuilder::new(app)
-                    .items(&[&file_menu, &edit_menu, &search_menu, &view_menu, &help_menu, &debug_menu])
+                    .items(&[&file_menu, &edit_menu, &search_menu, &model_menu, &view_menu, &help_menu, &debug_menu])
                     .build()?
             } else {
                 MenuBuilder::new(app)
-                    .items(&[&file_menu, &edit_menu, &search_menu, &view_menu, &help_menu])
+                    .items(&[&file_menu, &edit_menu, &search_menu, &model_menu, &view_menu, &help_menu])
                     .build()?
             };
 
