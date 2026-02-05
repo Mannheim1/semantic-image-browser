@@ -716,6 +716,30 @@ fn is_cuda_available() -> bool {
         .unwrap_or(false)
 }
 
+/// Uninstall a runtime.
+#[tauri::command]
+async fn uninstall_runtime(app: AppHandle, runtime_type: String) -> Result<(), String> {
+    let rt = ort_download::RuntimeType::from_str(&runtime_type)
+        .ok_or_else(|| format!("Invalid runtime type: {}", runtime_type))?;
+
+    ort_download::uninstall_runtime(&app, rt)?;
+
+    // If this was the selected runtime, clear the selection
+    let mut cfg = config::load_config(&app)?;
+    if cfg.runtime_type.as_deref() == Some(runtime_type.as_str()) {
+        cfg.runtime_type = None;
+        config::save_config(&app, &cfg)?;
+    }
+
+    Ok(())
+}
+
+/// Check CUDA system dependencies.
+#[tauri::command]
+fn check_cuda_dependencies() -> ort_download::CudaDependencyStatus {
+    ort_download::check_cuda_dependencies()
+}
+
 async fn scan_directory_internal(
     table: &lancedb::Table,
     thumb_dir: &Path,
@@ -1221,6 +1245,8 @@ pub fn run() {
             get_ort_download_size,
             download_ort,
             set_runtime_type,
+            uninstall_runtime,
+            check_cuda_dependencies,
             is_cuda_available,
             clear_database,
             open_app_data_folder
