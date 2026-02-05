@@ -449,6 +449,129 @@ fn move_dir_contents(src: &Path, dest: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Calculate the total size of a directory recursively.
+fn get_dir_size(path: &Path) -> u64 {
+    if !path.exists() {
+        return 0;
+    }
+
+    let mut size = 0u64;
+    if let Ok(entries) = fs::read_dir(path) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_file() {
+                size += entry.metadata().map(|m| m.len()).unwrap_or(0);
+            } else if path.is_dir() {
+                size += get_dir_size(&path);
+            }
+        }
+    }
+    size
+}
+
+/// Get the installed size of a runtime.
+pub fn get_runtime_installed_size(app: &AppHandle, runtime_type: RuntimeType) -> Result<Option<u64>, String> {
+    let dir = runtime_dir(app, runtime_type)?;
+    if dir.exists() {
+        Ok(Some(get_dir_size(&dir)))
+    } else {
+        Ok(None)
+    }
+}
+
+/// Uninstall a runtime by deleting its directory.
+pub fn uninstall_runtime(app: &AppHandle, runtime_type: RuntimeType) -> Result<(), String> {
+    let dir = runtime_dir(app, runtime_type)?;
+    if dir.exists() {
+        fs::remove_dir_all(&dir)
+            .map_err(|e| format!("Failed to remove runtime directory: {}", e))?;
+    }
+    Ok(())
+}
+
+/// Check if CUDA system dependencies are available.
+/// This checks for the required DLLs in the system PATH.
+#[cfg(target_os = "windows")]
+pub fn check_cuda_dependencies() -> CudaDependencyStatus {
+    use std::env;
+
+    // DLLs required by ONNX Runtime CUDA 12
+    let cuda_dlls = [
+        ("CUDA Runtime", "cudart64_12.dll"),
+    ];
+    let cublas_dlls = [
+        ("cuBLAS", "cublas64_12.dll"),
+        ("cuBLAS Lt", "cublasLt64_12.dll"),
+    ];
+    let cudnn_dlls = [
+        ("cuDNN", "cudnn64_9.dll"),
+        ("cuDNN Ops", "cudnn_ops64_9.dll"),
+        ("cuDNN CNN", "cudnn_cnn64_9.dll"),
+    ];
+
+    let path_var = env::var("PATH").unwrap_or_default();
+    let paths: Vec<&str> = path_var.split(';').collect();
+
+    let find_dll = |dll_name: &str| -> bool {
+        for dir in &paths {
+            let dll_path = Path::new(dir).join(dll_name);
+            if dll_path.exists() {
+                return true;
+            }
+        }
+        false
+    };
+
+    let mut dependencies = Vec::new();
+
+    // Check CUDA Runtime
+    let cuda_found = cuda_dlls.iter().all(|(_, dll)| find_dll(dll));
+    dependencies.push(CudaDependency {
+        name: "CUDA Toolkit 12.x".to_string(),
+        found: cuda_found,
+        details: if cuda_found { None } else { Some("cudart64_12.dll not found in PATH".to_string()) },
+    });
+
+    // Check cuBLAS
+    let cublas_found = cublas_dlls.iter().all(|(_, dll)| find_dll(dll));
+    dependencies.push(CudaDependency {
+        name: "cuBLAS".to_string(),
+        found: cublas_found,
+        details: if cublas_found { None } else { Some("cublas64_12.dll not found in PATH".to_string()) },
+    });
+
+    // Check cuDNN
+    let cudnn_found = cudnn_dlls.iter().all(|(_, dll)| find_dll(dll));
+    dependencies.push(CudaDependency {
+        name: "cuDNN 9.x".to_string(),
+        found: cudnn_found,
+        details: if cudnn_found { None } else { Some("cudnn64_9.dll not found in PATH".to_string()) },
+    });
+
+    let all_found = cuda_found && cublas_found && cudnn_found;
+
+    CudaDependencyStatus {
+        all_found,
+        dependencies,
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn check_cuda_dependencies() -> CudaDependencyStatus {
+    // On non-Windows, just return empty for now
+    // Could be extended to check for .so files on Linux
+    CudaDependencyStatus {
+        all_found: false,
+        dependencies: vec![
+            CudaDependency {
+                name: "CUDA dependencies".to_string(),
+                found: false,
+                details: Some("CUDA dependency checking not implemented for this platform".to_string()),
+            },
+        ],
+    }
+}
+
 /// Information about a single runtime type for the frontend.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct RuntimeInfo {
@@ -457,6 +580,22 @@ pub struct RuntimeInfo {
     pub installed: bool,
     pub available: bool, // Whether this runtime can be downloaded for this platform
     pub download_size: Option<u64>,
+    pub installed_size: Option<u64>, // Actual size on disk if installed
+}
+
+/// Information about a CUDA system dependency.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct CudaDependency {
+    pub name: String,
+    pub found: bool,
+    pub details: Option<String>,
+}
+
+/// Result of checking CUDA system dependencies.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct CudaDependencyStatus {
+    pub all_found: bool,
+    pub dependencies: Vec<CudaDependency>,
 }
 
 /// Information about ONNX Runtime status for the frontend.
@@ -493,6 +632,11 @@ pub fn get_ort_status(app: &AppHandle) -> Result<OrtStatus, String> {
     let mut runtimes = Vec::new();
     for &rt in RuntimeType::all() {
         let installed = is_runtime_installed(app, rt)?;
+        let installed_size = if installed {
+            get_runtime_installed_size(app, rt)?
+        } else {
+            None
+        };
         let available = match rt {
             RuntimeType::Cpu => true,
             RuntimeType::Cuda => platform.cuda_available(),
@@ -504,6 +648,7 @@ pub fn get_ort_status(app: &AppHandle) -> Result<OrtStatus, String> {
             installed,
             available,
             download_size: get_download_size(rt),
+            installed_size,
         });
     }
 

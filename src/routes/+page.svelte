@@ -34,6 +34,7 @@
     installed: boolean;
     available: boolean;
     download_size: number | null;
+    installed_size: number | null;
   }
 
   interface OrtStatus {
@@ -47,6 +48,17 @@
   interface OrtDownloadProgress {
     downloaded: number;
     total: number;
+  }
+
+  interface CudaDependency {
+    name: string;
+    found: boolean;
+    details: string | null;
+  }
+
+  interface CudaDependencyStatus {
+    all_found: boolean;
+    dependencies: CudaDependency[];
   }
 
   let searchQuery = $state("");
@@ -74,8 +86,11 @@
   let showOrtModal = $state(false);
   let ortDownloading = $state(false);
   let ortDownloadProgress = $state<OrtDownloadProgress | null>(null);
-  let ortDownloadError = $state<string | null>(null);
-  let selectedRuntimeType = $state<string>("cpu");
+  let ortError = $state<string | null>(null);
+  // Track desired install state for each runtime (for the checklist)
+  let desiredInstallState = $state<Record<string, boolean>>({});
+  let cudaDependencies = $state<CudaDependencyStatus | null>(null);
+  let showCudaGuide = $state(false);
 
   let showFoldersModal = $state(false);
   let ocrLexical = $state(false);
@@ -192,27 +207,88 @@
 
   async function openOrtModal() {
     showOrtModal = true;
-    ortDownloadError = null;
+    ortError = null;
     ortDownloadProgress = null;
+    showCudaGuide = false;
     // Refresh status
     ortStatus = await invoke("get_ort_status");
+    // Initialize desired state from current installed state
+    desiredInstallState = {};
+    for (const rt of ortStatus?.runtimes ?? []) {
+      desiredInstallState[rt.runtime_type] = rt.installed;
+    }
+    // Check CUDA dependencies
+    cudaDependencies = await invoke("check_cuda_dependencies");
   }
 
   let ortNeedsRestart = $state(false);
 
-  async function downloadOrt() {
+  // Check if desired state differs from current state
+  function hasChanges(): boolean {
+    if (!ortStatus) return false;
+    for (const rt of ortStatus.runtimes) {
+      if (desiredInstallState[rt.runtime_type] !== rt.installed) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  // Get summary of changes to apply
+  function getChangesSummary(): { toInstall: string[], toUninstall: string[] } {
+    const toInstall: string[] = [];
+    const toUninstall: string[] = [];
+    if (!ortStatus) return { toInstall, toUninstall };
+
+    for (const rt of ortStatus.runtimes) {
+      const desired = desiredInstallState[rt.runtime_type];
+      if (desired && !rt.installed) {
+        toInstall.push(rt.display_name);
+      } else if (!desired && rt.installed) {
+        toUninstall.push(rt.display_name);
+      }
+    }
+    return { toInstall, toUninstall };
+  }
+
+  async function applyRuntimeChanges() {
+    if (!ortStatus) return;
+
     ortDownloading = true;
-    ortDownloadError = null;
-    ortDownloadProgress = { downloaded: 0, total: 0 };
+    ortError = null;
 
     try {
-      await invoke("download_ort", { runtimeType: selectedRuntimeType });
-      // Refresh status after download
+      // Process uninstalls first
+      for (const rt of ortStatus.runtimes) {
+        const desired = desiredInstallState[rt.runtime_type];
+        if (!desired && rt.installed) {
+          await invoke("uninstall_runtime", { runtimeType: rt.runtime_type });
+        }
+      }
+
+      // Then process installs
+      for (const rt of ortStatus.runtimes) {
+        const desired = desiredInstallState[rt.runtime_type];
+        if (desired && !rt.installed && rt.available) {
+          ortDownloadProgress = { downloaded: 0, total: 0 };
+          await invoke("download_ort", { runtimeType: rt.runtime_type });
+        }
+      }
+
+      // Refresh status
       ortStatus = await invoke("get_ort_status");
       ortDownloadProgress = null;
+
+      // Update desired state to match new reality
+      for (const rt of ortStatus?.runtimes ?? []) {
+        desiredInstallState[rt.runtime_type] = rt.installed;
+      }
+
       ortNeedsRestart = true;
     } catch (e) {
-      ortDownloadError = String(e);
+      ortError = String(e);
+      // Refresh status to show actual state
+      ortStatus = await invoke("get_ort_status");
     }
 
     ortDownloading = false;
@@ -240,9 +316,9 @@
         console.error("Failed to set runtime type:", e);
       }
     } else {
-      // Runtime not installed - open modal to download
-      selectedRuntimeType = runtimeType;
-      showOrtModal = true;
+      // Runtime not installed - open modal to install
+      openOrtModal();
+      desiredInstallState[runtimeType] = true;
     }
   }
 
@@ -655,126 +731,154 @@
 
   {#if showOrtModal}
     <div class="modal-overlay" onclick={() => { if (!ortDownloading) showOrtModal = false; }}>
-      <div class="modal" onclick={(e) => e.stopPropagation()}>
+      <div class="modal modal-wide" onclick={(e) => e.stopPropagation()}>
         <div class="modal-header">
-          <span>ONNX Runtime Setup</span>
+          <span>Runtime Settings</span>
           <button class="modal-close" onclick={() => { if (!ortDownloading) showOrtModal = false; }} disabled={ortDownloading}>×</button>
         </div>
         <div class="modal-body">
-          {#if ortStatus?.selected_installed}
-            <div class="ort-status ort-status-ok">
-              <div class="ort-status-icon">✓</div>
-              <div class="ort-status-text">
-                <div>ONNX Runtime is installed ({ortStatus.selected_runtime ?? "cpu"})</div>
-                <div class="ort-status-detail">{ortStatus.library_path}</div>
-              </div>
-            </div>
-          {:else}
-            <div class="ort-status ort-status-missing">
-              <div class="ort-status-icon">!</div>
-              <div class="ort-status-text">
-                <div>ONNX Runtime is not installed</div>
-                <div class="ort-status-detail">Required for semantic image search</div>
-              </div>
-            </div>
-          {/if}
-
-          <div class="ort-info">
-            <div class="ort-info-row">
-              <span>Platform:</span>
-              <span>{ortStatus?.platform ?? "Unknown"}</span>
-            </div>
-          </div>
-
-          {#if !ortDownloading}
-            <div class="ort-runtime-select">
-              <div class="ort-runtime-label">Select Runtime Type:</div>
+          <!-- Installed Runtimes Section -->
+          <div class="ort-section">
+            <div class="ort-section-title">Installed Runtimes</div>
+            <div class="ort-runtime-list">
               {#each ortStatus?.runtimes ?? [] as runtime}
-                <label class="ort-runtime-option" class:disabled={!runtime.available}>
+                <label class="ort-runtime-row" class:disabled={!runtime.available}>
                   <input
-                    type="radio"
-                    bind:group={selectedRuntimeType}
-                    value={runtime.runtime_type}
-                    disabled={!runtime.available}
+                    type="checkbox"
+                    checked={desiredInstallState[runtime.runtime_type] ?? false}
+                    disabled={!runtime.available || ortDownloading}
+                    onchange={(e) => {
+                      desiredInstallState[runtime.runtime_type] = (e.target as HTMLInputElement).checked;
+                      desiredInstallState = { ...desiredInstallState };
+                    }}
                   />
-                  <div class="ort-runtime-info">
-                    <span class="ort-runtime-name">
-                      {runtime.display_name}
-                      {#if runtime.installed}
-                        <span class="ort-runtime-installed">✓ Installed</span>
-                      {/if}
-                      {#if !runtime.available}
-                        <span class="ort-runtime-unavailable">(Coming soon)</span>
-                      {/if}
-                    </span>
-                    <span class="ort-runtime-desc">
-                      {#if runtime.runtime_type === "cpu"}
-                        Works on all systems
-                      {:else if runtime.runtime_type === "cuda"}
-                        Faster processing. Requires NVIDIA GPU with CUDA 11.8+
-                      {:else if runtime.runtime_type === "directml"}
-                        GPU acceleration via DirectML (Windows)
-                      {/if}
-                      {#if runtime.download_size}
-                        , ~{formatBytes(runtime.download_size)} download
-                      {/if}
-                    </span>
-                  </div>
+                  <span class="ort-runtime-name">{runtime.display_name}</span>
+                  <span class="ort-runtime-size">
+                    {#if !runtime.available}
+                      <span class="ort-coming-soon">Coming soon</span>
+                    {:else if runtime.installed && runtime.installed_size}
+                      {formatBytes(runtime.installed_size)}
+                    {:else if runtime.download_size}
+                      ~{formatBytes(runtime.download_size)}
+                    {/if}
+                  </span>
                 </label>
               {/each}
             </div>
-          {/if}
 
-          {#if ortDownloading && ortDownloadProgress}
-            <div class="ort-progress">
-              <div class="ort-progress-text">
-                Downloading... {formatBytes(ortDownloadProgress.downloaded)}
-                {#if ortDownloadProgress.total > 0}
-                  / {formatBytes(ortDownloadProgress.total)}
+            {#if ortDownloading && ortDownloadProgress}
+              <div class="ort-progress">
+                <div class="ort-progress-text">
+                  Downloading... {formatBytes(ortDownloadProgress.downloaded)}
+                  {#if ortDownloadProgress.total > 0}
+                    / {formatBytes(ortDownloadProgress.total)}
+                  {/if}
+                </div>
+                <div class="ort-progress-bar">
+                  <div
+                    class="ort-progress-fill"
+                    style="width: {ortDownloadProgress.total > 0 ? (ortDownloadProgress.downloaded / ortDownloadProgress.total * 100) : 0}%"
+                  ></div>
+                </div>
+              </div>
+            {/if}
+
+            {#if ortError}
+              <div class="ort-error">
+                Error: {ortError}
+              </div>
+            {/if}
+
+            {#if ortNeedsRestart}
+              <div class="ort-restart-notice">
+                Changes applied. Please restart the app for them to take effect.
+              </div>
+            {/if}
+
+            <div class="ort-apply-row">
+              <button
+                class="modal-btn modal-btn-primary"
+                onclick={applyRuntimeChanges}
+                disabled={ortDownloading || !hasChanges()}
+              >
+                {#if ortDownloading}
+                  Applying...
+                {:else}
+                  {@const changes = getChangesSummary()}
+                  {#if changes.toInstall.length > 0 && changes.toUninstall.length > 0}
+                    Install {changes.toInstall.length} & Uninstall {changes.toUninstall.length}
+                  {:else if changes.toInstall.length > 0}
+                    Install {changes.toInstall.length} runtime{changes.toInstall.length > 1 ? 's' : ''}
+                  {:else if changes.toUninstall.length > 0}
+                    Uninstall {changes.toUninstall.length} runtime{changes.toUninstall.length > 1 ? 's' : ''}
+                  {:else}
+                    Apply Changes
+                  {/if}
                 {/if}
+              </button>
+            </div>
+          </div>
+
+          <!-- CUDA Dependencies Section -->
+          {#if (desiredInstallState['cuda'] || ortStatus?.runtimes?.find(r => r.runtime_type === 'cuda')?.installed)}
+            <div class="ort-section">
+              <div class="ort-section-title">CUDA System Dependencies</div>
+              <div class="ort-dep-list">
+                {#each cudaDependencies?.dependencies ?? [] as dep}
+                  <div class="ort-dep-row">
+                    <span class="ort-dep-icon" class:found={dep.found} class:missing={!dep.found}>
+                      {dep.found ? '✓' : '✗'}
+                    </span>
+                    <span class="ort-dep-name">{dep.name}</span>
+                    {#if !dep.found && dep.details}
+                      <span class="ort-dep-detail">{dep.details}</span>
+                    {/if}
+                  </div>
+                {/each}
               </div>
-              <div class="ort-progress-bar">
-                <div
-                  class="ort-progress-fill"
-                  style="width: {ortDownloadProgress.total > 0 ? (ortDownloadProgress.downloaded / ortDownloadProgress.total * 100) : 0}%"
-                ></div>
-              </div>
+
+              {#if !cudaDependencies?.all_found}
+                <button
+                  class="ort-guide-toggle"
+                  onclick={() => showCudaGuide = !showCudaGuide}
+                >
+                  {showCudaGuide ? 'Hide' : 'Show'} installation guide
+                </button>
+
+                {#if showCudaGuide}
+                  <div class="ort-guide">
+                    <p><strong>To use the CUDA runtime, install these dependencies:</strong></p>
+                    <ol>
+                      <li>
+                        <strong>CUDA Toolkit 12.x</strong><br>
+                        Download from <a href="https://developer.nvidia.com/cuda-downloads" target="_blank">NVIDIA CUDA Downloads</a>
+                      </li>
+                      <li>
+                        <strong>cuDNN 9.x</strong><br>
+                        Download from <a href="https://developer.nvidia.com/cudnn" target="_blank">NVIDIA cuDNN</a> (requires NVIDIA account)<br>
+                        Extract and add the <code>bin</code> folder to your system PATH
+                      </li>
+                    </ol>
+                    <p>After installing, restart this app and reopen this dialog to verify.</p>
+                  </div>
+                {/if}
+              {/if}
             </div>
           {/if}
 
-          {#if ortDownloadError}
-            <div class="ort-error">
-              Error: {ortDownloadError}
-            </div>
-          {/if}
-
-          {#if ortNeedsRestart}
-            <div class="ort-restart-notice">
-              Runtime downloaded successfully. Please restart the app to use the new runtime.
-            </div>
-          {/if}
+          <div class="ort-info-note">
+            <span class="ort-info-icon">ℹ</span>
+            Use <strong>Model → Select Runtime</strong> in the menu bar to choose which runtime to use.
+          </div>
         </div>
         <div class="modal-footer">
           <div class="modal-buttons">
-            <button
-              class="modal-btn modal-btn-primary"
-              onclick={downloadOrt}
-              disabled={ortDownloading || !ortStatus?.runtimes?.find(r => r.runtime_type === selectedRuntimeType)?.available}
-            >
-              {#if ortDownloading}
-                Downloading...
-              {:else if ortStatus?.runtimes?.find(r => r.runtime_type === selectedRuntimeType)?.installed}
-                Reinstall Runtime
-              {:else}
-                Download Runtime
-              {/if}
-            </button>
             <button
               class="modal-btn"
               onclick={() => showOrtModal = false}
               disabled={ortDownloading}
             >
-              {ortStatus?.selected_installed ? "Close" : "Cancel"}
+              Close
             </button>
           </div>
         </div>
@@ -1281,131 +1385,79 @@
   }
 
   /* ORT Modal Styles */
-  .ort-status {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    padding: 12px;
-    border-radius: 6px;
-    margin-bottom: 12px;
+  .modal-wide {
+    width: 480px;
   }
 
-  .ort-status-ok {
-    background: rgba(58, 90, 58, 0.3);
-    border: 1px solid #4a6a4a;
-  }
-
-  .ort-status-missing {
-    background: rgba(90, 58, 58, 0.3);
-    border: 1px solid #6a4a4a;
-  }
-
-  .ort-status-icon {
-    font-size: 24px;
-    width: 32px;
-    text-align: center;
-  }
-
-  .ort-status-ok .ort-status-icon {
-    color: #6a9a6a;
-  }
-
-  .ort-status-missing .ort-status-icon {
-    color: #9a6a6a;
-  }
-
-  .ort-status-text {
-    flex: 1;
-  }
-
-  .ort-status-detail {
-    font-size: 11px;
-    color: var(--text-secondary);
-    margin-top: 2px;
-    word-break: break-all;
-  }
-
-  .ort-info {
+  .ort-section {
     background: var(--bg-base);
     border-radius: 6px;
-    padding: 12px;
+    padding: 16px;
     margin-bottom: 12px;
   }
 
-  .ort-info-row {
-    display: flex;
-    justify-content: space-between;
+  .ort-section-title {
     font-size: 13px;
-    padding: 4px 0;
+    font-weight: 600;
+    margin-bottom: 12px;
+    color: var(--text-primary);
   }
 
-  .ort-info-row span:first-child {
-    color: var(--text-secondary);
-  }
-
-  .ort-runtime-select {
-    margin-top: 12px;
-  }
-
-  .ort-runtime-label {
-    font-size: 12px;
-    color: var(--text-secondary);
-    margin-bottom: 8px;
-  }
-
-  .ort-runtime-option {
-    display: flex;
-    align-items: flex-start;
-    gap: 10px;
-    padding: 10px;
-    background: var(--bg-base);
-    border: 1px solid var(--border-color);
-    border-radius: 6px;
-    margin-bottom: 8px;
-    cursor: pointer;
-  }
-
-  .ort-runtime-option:hover:not(.disabled) {
-    border-color: #5a5250;
-  }
-
-  .ort-runtime-option.disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-  }
-
-  .ort-runtime-option input[type="radio"] {
-    margin-top: 3px;
-  }
-
-  .ort-runtime-info {
+  .ort-runtime-list {
     display: flex;
     flex-direction: column;
     gap: 2px;
   }
 
-  .ort-runtime-name {
-    font-size: 14px;
+  .ort-runtime-row {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: 10px;
+    padding: 8px 10px;
+    border-radius: 4px;
+    cursor: pointer;
   }
 
-  .ort-runtime-installed {
-    font-size: 11px;
-    color: #4ade80;
-    font-weight: 500;
+  .ort-runtime-row:hover:not(.disabled) {
+    background: rgba(255, 255, 255, 0.05);
   }
 
-  .ort-runtime-unavailable {
-    font-size: 11px;
-    color: var(--text-secondary);
-    font-style: italic;
+  .ort-runtime-row.disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
   }
 
-  .ort-runtime-desc {
+  .ort-runtime-row input[type="checkbox"] {
+    width: 16px;
+    height: 16px;
+    cursor: pointer;
+  }
+
+  .ort-runtime-row input[type="checkbox"]:disabled {
+    cursor: not-allowed;
+  }
+
+  .ort-runtime-name {
+    flex: 1;
+    font-size: 14px;
+  }
+
+  .ort-runtime-size {
     font-size: 12px;
     color: var(--text-secondary);
+    min-width: 80px;
+    text-align: right;
+  }
+
+  .ort-coming-soon {
+    font-style: italic;
+    color: var(--text-secondary);
+  }
+
+  .ort-apply-row {
+    margin-top: 12px;
+    display: flex;
+    justify-content: flex-end;
   }
 
   .ort-progress {
@@ -1420,7 +1472,7 @@
 
   .ort-progress-bar {
     height: 8px;
-    background: var(--bg-base);
+    background: rgba(0, 0, 0, 0.3);
     border-radius: 4px;
     overflow: hidden;
   }
@@ -1449,6 +1501,113 @@
     border-radius: 6px;
     color: #6ac;
     font-size: 13px;
+  }
+
+  /* CUDA Dependencies Styles */
+  .ort-dep-list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .ort-dep-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 10px;
+    font-size: 13px;
+  }
+
+  .ort-dep-icon {
+    width: 18px;
+    text-align: center;
+    font-weight: bold;
+  }
+
+  .ort-dep-icon.found {
+    color: #4ade80;
+  }
+
+  .ort-dep-icon.missing {
+    color: #f87171;
+  }
+
+  .ort-dep-name {
+    flex: 1;
+  }
+
+  .ort-dep-detail {
+    font-size: 11px;
+    color: var(--text-secondary);
+  }
+
+  .ort-guide-toggle {
+    margin-top: 12px;
+    background: none;
+    border: none;
+    color: #6ac;
+    cursor: pointer;
+    font-size: 13px;
+    padding: 0;
+    text-decoration: underline;
+  }
+
+  .ort-guide-toggle:hover {
+    color: #8ce;
+  }
+
+  .ort-guide {
+    margin-top: 12px;
+    padding: 12px;
+    background: rgba(0, 0, 0, 0.2);
+    border-radius: 4px;
+    font-size: 13px;
+    line-height: 1.5;
+  }
+
+  .ort-guide p {
+    margin: 0 0 8px 0;
+  }
+
+  .ort-guide ol {
+    margin: 0;
+    padding-left: 20px;
+  }
+
+  .ort-guide li {
+    margin-bottom: 8px;
+  }
+
+  .ort-guide a {
+    color: #6ac;
+  }
+
+  .ort-guide a:hover {
+    color: #8ce;
+  }
+
+  .ort-guide code {
+    background: rgba(0, 0, 0, 0.3);
+    padding: 2px 6px;
+    border-radius: 3px;
+    font-family: monospace;
+  }
+
+  .ort-info-note {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    padding: 10px 12px;
+    background: rgba(100, 150, 200, 0.1);
+    border: 1px solid rgba(100, 150, 200, 0.3);
+    border-radius: 6px;
+    font-size: 12px;
+    color: var(--text-secondary);
+  }
+
+  .ort-info-icon {
+    font-size: 14px;
+    color: #6ac;
   }
 
   /* Folders Modal Styles */
