@@ -28,11 +28,19 @@
     total: number;
   }
 
-  interface OrtStatus {
+  interface RuntimeInfo {
+    runtime_type: string;
+    display_name: string;
     installed: boolean;
+    available: boolean;
+    download_size: number | null;
+  }
+
+  interface OrtStatus {
+    selected_runtime: string | null;
+    selected_installed: boolean;
     library_path: string | null;
-    runtime_type: string | null;
-    gpu_available: boolean;
+    runtimes: RuntimeInfo[];
     platform: string;
   }
 
@@ -67,7 +75,7 @@
   let ortDownloading = $state(false);
   let ortDownloadProgress = $state<OrtDownloadProgress | null>(null);
   let ortDownloadError = $state<string | null>(null);
-  let selectedRuntimeType = $state<"cpu" | "gpu">("cpu");
+  let selectedRuntimeType = $state<string>("cpu");
 
   let showFoldersModal = $state(false);
   let ocrLexical = $state(false);
@@ -208,6 +216,34 @@
     }
 
     ortDownloading = false;
+  }
+
+  async function handleRuntimeMenuClick(runtimeType: string) {
+    // Refresh status to get current installation state
+    ortStatus = await invoke("get_ort_status");
+    const runtime = ortStatus?.runtimes?.find(r => r.runtime_type === runtimeType);
+
+    if (!runtime?.available) {
+      // DirectML not yet available
+      return;
+    }
+
+    if (runtime?.installed) {
+      // Runtime is installed - switch to it
+      try {
+        await invoke("set_runtime_type", { runtimeType });
+        ortStatus = await invoke("get_ort_status");
+        ortNeedsRestart = true;
+        // Show the modal to display the restart notice
+        showOrtModal = true;
+      } catch (e) {
+        console.error("Failed to set runtime type:", e);
+      }
+    } else {
+      // Runtime not installed - open modal to download
+      selectedRuntimeType = runtimeType;
+      showOrtModal = true;
+    }
   }
 
   async function addDirectory() {
@@ -447,6 +483,15 @@
       case "model_settings":
         openOrtModal();
         break;
+      case "runtime_cpu":
+        handleRuntimeMenuClick("cpu");
+        break;
+      case "runtime_directml":
+        handleRuntimeMenuClick("directml");
+        break;
+      case "runtime_cuda":
+        handleRuntimeMenuClick("cuda");
+        break;
       case "sort_relevance":
         sortField = "relevance";
         sortAscending = true;
@@ -616,11 +661,11 @@
           <button class="modal-close" onclick={() => { if (!ortDownloading) showOrtModal = false; }} disabled={ortDownloading}>×</button>
         </div>
         <div class="modal-body">
-          {#if ortStatus?.installed}
+          {#if ortStatus?.selected_installed}
             <div class="ort-status ort-status-ok">
               <div class="ort-status-icon">✓</div>
               <div class="ort-status-text">
-                <div>ONNX Runtime is installed</div>
+                <div>ONNX Runtime is installed ({ortStatus.selected_runtime ?? "cpu"})</div>
                 <div class="ort-status-detail">{ortStatus.library_path}</div>
               </div>
             </div>
@@ -639,31 +684,44 @@
               <span>Platform:</span>
               <span>{ortStatus?.platform ?? "Unknown"}</span>
             </div>
-            <div class="ort-info-row">
-              <span>GPU Support:</span>
-              <span>{ortStatus?.gpu_available ? "Available" : "Not available"}</span>
-            </div>
           </div>
 
           {#if !ortDownloading}
             <div class="ort-runtime-select">
               <div class="ort-runtime-label">Select Runtime Type:</div>
-              <label class="ort-runtime-option">
-                <input type="radio" bind:group={selectedRuntimeType} value="cpu" />
-                <div class="ort-runtime-info">
-                  <span class="ort-runtime-name">CPU (Recommended)</span>
-                  <span class="ort-runtime-desc">Works on all systems, ~78 MB download</span>
-                </div>
-              </label>
-              {#if ortStatus?.gpu_available}
-                <label class="ort-runtime-option">
-                  <input type="radio" bind:group={selectedRuntimeType} value="gpu" />
+              {#each ortStatus?.runtimes ?? [] as runtime}
+                <label class="ort-runtime-option" class:disabled={!runtime.available}>
+                  <input
+                    type="radio"
+                    bind:group={selectedRuntimeType}
+                    value={runtime.runtime_type}
+                    disabled={!runtime.available}
+                  />
                   <div class="ort-runtime-info">
-                    <span class="ort-runtime-name">GPU (NVIDIA CUDA)</span>
-                    <span class="ort-runtime-desc">Faster processing, ~326 MB download. Requires NVIDIA GPU with CUDA 11.8+</span>
+                    <span class="ort-runtime-name">
+                      {runtime.display_name}
+                      {#if runtime.installed}
+                        <span class="ort-runtime-installed">✓ Installed</span>
+                      {/if}
+                      {#if !runtime.available}
+                        <span class="ort-runtime-unavailable">(Coming soon)</span>
+                      {/if}
+                    </span>
+                    <span class="ort-runtime-desc">
+                      {#if runtime.runtime_type === "cpu"}
+                        Works on all systems
+                      {:else if runtime.runtime_type === "cuda"}
+                        Faster processing. Requires NVIDIA GPU with CUDA 11.8+
+                      {:else if runtime.runtime_type === "directml"}
+                        GPU acceleration via DirectML (Windows)
+                      {/if}
+                      {#if runtime.download_size}
+                        , ~{formatBytes(runtime.download_size)} download
+                      {/if}
+                    </span>
                   </div>
                 </label>
-              {/if}
+              {/each}
             </div>
           {/if}
 
@@ -701,11 +759,11 @@
             <button
               class="modal-btn modal-btn-primary"
               onclick={downloadOrt}
-              disabled={ortDownloading}
+              disabled={ortDownloading || !ortStatus?.runtimes?.find(r => r.runtime_type === selectedRuntimeType)?.available}
             >
               {#if ortDownloading}
                 Downloading...
-              {:else if ortStatus?.installed}
+              {:else if ortStatus?.runtimes?.find(r => r.runtime_type === selectedRuntimeType)?.installed}
                 Reinstall Runtime
               {:else}
                 Download Runtime
@@ -716,7 +774,7 @@
               onclick={() => showOrtModal = false}
               disabled={ortDownloading}
             >
-              {ortStatus?.installed ? "Close" : "Cancel"}
+              {ortStatus?.selected_installed ? "Close" : "Cancel"}
             </button>
           </div>
         </div>
@@ -1307,8 +1365,13 @@
     cursor: pointer;
   }
 
-  .ort-runtime-option:hover {
+  .ort-runtime-option:hover:not(.disabled) {
     border-color: #5a5250;
+  }
+
+  .ort-runtime-option.disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
   }
 
   .ort-runtime-option input[type="radio"] {
@@ -1323,6 +1386,21 @@
 
   .ort-runtime-name {
     font-size: 14px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .ort-runtime-installed {
+    font-size: 11px;
+    color: #4ade80;
+    font-weight: 500;
+  }
+
+  .ort-runtime-unavailable {
+    font-size: 11px;
+    color: var(--text-secondary);
+    font-style: italic;
   }
 
   .ort-runtime-desc {

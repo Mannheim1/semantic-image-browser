@@ -674,11 +674,6 @@ async fn download_ort(app: AppHandle, runtime_type: String) -> Result<String, St
     let rt = ort_download::RuntimeType::from_str(&runtime_type)
         .ok_or_else(|| format!("Invalid runtime type: {}", runtime_type))?;
 
-    // Save the runtime type to config
-    let mut cfg = config::load_config(&app)?;
-    cfg.runtime_type = Some(runtime_type.clone());
-    config::save_config(&app, &cfg)?;
-
     // Create a channel for progress updates
     let app_clone = app.clone();
     let progress_callback = move |downloaded: u64, total: u64| {
@@ -687,14 +682,37 @@ async fn download_ort(app: AppHandle, runtime_type: String) -> Result<String, St
 
     let lib_path = ort_download::download_ort(&app, rt, progress_callback).await?;
 
+    // Save the runtime type to config after successful download
+    let mut cfg = config::load_config(&app)?;
+    cfg.runtime_type = Some(runtime_type.clone());
+    config::save_config(&app, &cfg)?;
+
     Ok(lib_path.to_string_lossy().to_string())
 }
 
-/// Check if GPU runtime is available for this platform.
+/// Set the runtime type in config (for selecting an already-installed runtime).
 #[tauri::command]
-fn is_gpu_available() -> bool {
+async fn set_runtime_type(app: AppHandle, runtime_type: String) -> Result<(), String> {
+    let rt = ort_download::RuntimeType::from_str(&runtime_type)
+        .ok_or_else(|| format!("Invalid runtime type: {}", runtime_type))?;
+
+    // Verify the runtime is installed
+    if !ort_download::is_runtime_installed(&app, rt)? {
+        return Err(format!("Runtime '{}' is not installed", runtime_type));
+    }
+
+    let mut cfg = config::load_config(&app)?;
+    cfg.runtime_type = Some(runtime_type);
+    config::save_config(&app, &cfg)?;
+
+    Ok(())
+}
+
+/// Check if CUDA runtime is available for this platform.
+#[tauri::command]
+fn is_cuda_available() -> bool {
     ort_download::Platform::detect()
-        .map(|p| p.gpu_available())
+        .map(|p| p.cuda_available())
         .unwrap_or(false)
 }
 
@@ -995,7 +1013,15 @@ pub fn run() {
                 .item(&CheckMenuItemBuilder::new("&Semantic OCR").id("ocr_semantic").build(app)?)
                 .build()?;
 
+            let runtime_submenu = SubmenuBuilder::new(app, "Select &Runtime (Restart required)")
+                .item(&MenuItemBuilder::new("CPU").id("runtime_cpu").build(app)?)
+                .item(&MenuItemBuilder::new("GPU (DirectML)").id("runtime_directml").enabled(false).build(app)?)
+                .item(&MenuItemBuilder::new("GPU (CUDA)").id("runtime_cuda").build(app)?)
+                .build()?;
+
             let model_menu = SubmenuBuilder::new(app, "&Model")
+                .item(&runtime_submenu)
+                .separator()
                 .item(&MenuItemBuilder::new("&Runtime settings...").id("model_settings").build(app)?)
                 .build()?;
 
@@ -1061,9 +1087,15 @@ pub fn run() {
             let handle_for_task = app.handle().clone();
             let cfg_for_task = cfg.clone();
             tauri::async_runtime::spawn(async move {
+                // Determine the runtime type from config (default to CPU)
+                let runtime_type = cfg_for_task.runtime_type
+                    .as_deref()
+                    .and_then(ort_download::RuntimeType::from_str)
+                    .unwrap_or(ort_download::RuntimeType::Cpu);
+
                 // Determine the ONNX Runtime library path:
                 // 1. If ort_dylib_path is set in config (dev override), use that
-                // 2. Otherwise, check if runtime is downloaded to app data
+                // 2. Otherwise, check if the selected runtime is downloaded
                 let ort_path: Option<PathBuf> = if let Some(override_path) = &cfg_for_task.ort_dylib_path {
                     let p = PathBuf::from(override_path);
                     if p.exists() {
@@ -1075,13 +1107,13 @@ pub fn run() {
                     }
                 } else {
                     // Check for downloaded runtime
-                    match ort_download::get_ort_library_path(&handle_for_task) {
+                    match ort_download::get_ort_library_path(&handle_for_task, runtime_type) {
                         Ok(Some(p)) => {
-                            println!("Using downloaded ONNX Runtime: {}", p.display());
+                            println!("Using {} runtime: {}", runtime_type.display_name(), p.display());
                             Some(p)
                         }
                         Ok(None) => {
-                            println!("ONNX Runtime not installed. Use the settings to download it.");
+                            println!("{} runtime not installed. Use Model > Select Runtime to download it.", runtime_type.display_name());
                             None
                         }
                         Err(e) => {
@@ -1091,8 +1123,8 @@ pub fn run() {
                     }
                 };
 
-                // Check if GPU runtime is configured
-                let use_gpu = cfg_for_task.runtime_type.as_deref() == Some("gpu");
+                // Check if CUDA runtime is configured (DirectML would need different handling)
+                let use_gpu = runtime_type == ort_download::RuntimeType::Cuda;
 
                 // Try to load the embedding backend if ORT and model are available
                 let (embedding_backend, model_id) = match (ort_path, &cfg_for_task.model_dir) {
@@ -1188,7 +1220,8 @@ pub fn run() {
             get_ort_status,
             get_ort_download_size,
             download_ort,
-            is_gpu_available,
+            set_runtime_type,
+            is_cuda_available,
             clear_database,
             open_app_data_folder
         ])
