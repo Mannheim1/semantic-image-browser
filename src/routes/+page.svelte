@@ -866,21 +866,6 @@
             </div>
           {/if}
 
-          <div class="ort-info-note">
-            <span class="ort-info-icon">ℹ</span>
-            Use <strong>Model → Select Runtime</strong> in the menu bar to choose which runtime to use.
-          </div>
-        </div>
-        <div class="modal-footer">
-          <div class="modal-buttons">
-            <button
-              class="modal-btn"
-              onclick={() => showOrtModal = false}
-              disabled={ortDownloading}
-            >
-              Close
-            </button>
-          </div>
         </div>
       </div>
     </div>
@@ -1591,23 +1576,6 @@
     padding: 2px 6px;
     border-radius: 3px;
     font-family: monospace;
-  }
-
-  .ort-info-note {
-    display: flex;
-    align-items: flex-start;
-    gap: 8px;
-    padding: 10px 12px;
-    background: rgba(100, 150, 200, 0.1);
-    border: 1px solid rgba(100, 150, 200, 0.3);
-    border-radius: 6px;
-    font-size: 12px;
-    color: var(--text-secondary);
-  }
-
-  .ort-info-icon {
-    font-size: 14px;
-    color: #6ac;
   }
 
   /* Folders Modal Styles */
