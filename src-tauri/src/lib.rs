@@ -1037,10 +1037,13 @@ pub fn run() {
                 .item(&CheckMenuItemBuilder::new("&Semantic OCR").id("ocr_semantic").build(app)?)
                 .build()?;
 
+            // Determine which runtime is currently active
+            let active_runtime = cfg.runtime_type.as_deref().unwrap_or("cpu");
+
             let runtime_submenu = SubmenuBuilder::new(app, "Select &Runtime (Restart required)")
-                .item(&MenuItemBuilder::new("CPU").id("runtime_cpu").build(app)?)
-                .item(&MenuItemBuilder::new("GPU (DirectML)").id("runtime_directml").enabled(false).build(app)?)
-                .item(&MenuItemBuilder::new("GPU (CUDA)").id("runtime_cuda").build(app)?)
+                .item(&CheckMenuItemBuilder::new("CPU").id("runtime_cpu").checked(active_runtime == "cpu").build(app)?)
+                .item(&CheckMenuItemBuilder::new("GPU (DirectML)").id("runtime_directml").enabled(false).checked(active_runtime == "directml").build(app)?)
+                .item(&CheckMenuItemBuilder::new("GPU (CUDA)").id("runtime_cuda").checked(active_runtime == "cuda" || active_runtime == "gpu").build(app)?)
                 .build()?;
 
             let model_menu = SubmenuBuilder::new(app, "&Model")
