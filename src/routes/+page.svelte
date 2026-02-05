@@ -1328,19 +1328,6 @@
     gap: 12px;
   }
 
-  .modal-footer {
-    padding: 12px 16px;
-    border-top: 1px solid var(--border-color);
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-  }
-
-  .modal-buttons {
-    display: flex;
-    gap: 8px;
-  }
-
   .modal-btn {
     padding: 8px 16px;
     background: var(--bg-base);
