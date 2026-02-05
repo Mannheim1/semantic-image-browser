@@ -1035,6 +1035,23 @@ pub fn run() {
             let search_menu = SubmenuBuilder::new(app, "&Search")
                 .item(&CheckMenuItemBuilder::new("&Lexical OCR").id("ocr_lexical").build(app)?)
                 .item(&CheckMenuItemBuilder::new("&Semantic OCR").id("ocr_semantic").build(app)?)
+                .separator()
+                .item(&SubmenuBuilder::new(app, "Sort &by...")
+                    .item(&MenuItemBuilder::new("&Relevance").id("sort_relevance").build(app)?)
+                    .separator()
+                    .item(&SubmenuBuilder::new(app, "Date &Created")
+                        .item(&MenuItemBuilder::new("&Ascending").id("sort_created_asc").build(app)?)
+                        .item(&MenuItemBuilder::new("&Descending").id("sort_created_desc").build(app)?)
+                        .build()?)
+                    .item(&SubmenuBuilder::new(app, "Date &Modified")
+                        .item(&MenuItemBuilder::new("&Ascending").id("sort_modified_asc").build(app)?)
+                        .item(&MenuItemBuilder::new("&Descending").id("sort_modified_desc").build(app)?)
+                        .build()?)
+                    .item(&SubmenuBuilder::new(app, "File &Size")
+                        .item(&MenuItemBuilder::new("&Ascending").id("sort_size_asc").build(app)?)
+                        .item(&MenuItemBuilder::new("&Descending").id("sort_size_desc").build(app)?)
+                        .build()?)
+                    .build()?)
                 .build()?;
 
             // Determine which runtime is currently active
@@ -1052,19 +1069,6 @@ pub fn run() {
                 .item(&MenuItemBuilder::new("&Runtime settings...").id("model_settings").build(app)?)
                 .build()?;
 
-            let view_menu = SubmenuBuilder::new(app, "&View")
-                .item(&MenuItemBuilder::new("&Relevance").id("sort_relevance").build(app)?)
-                .separator()
-                .item(&MenuItemBuilder::new("Date &Created \u{2191}").id("sort_created_asc").build(app)?)
-                .item(&MenuItemBuilder::new("Date C&reated \u{2193}").id("sort_created_desc").build(app)?)
-                .separator()
-                .item(&MenuItemBuilder::new("Date &Modified \u{2191}").id("sort_modified_asc").build(app)?)
-                .item(&MenuItemBuilder::new("Date Mo&dified \u{2193}").id("sort_modified_desc").build(app)?)
-                .separator()
-                .item(&MenuItemBuilder::new("File &Size \u{2191}").id("sort_size_asc").build(app)?)
-                .item(&MenuItemBuilder::new("File Si&ze \u{2193}").id("sort_size_desc").build(app)?)
-                .build()?;
-
             let help_menu = SubmenuBuilder::new(app, "&Help")
                 .item(&MenuItemBuilder::new("&About").id("about").build(app)?)
                 .item(&MenuItemBuilder::new("View &Controls").id("view_controls").build(app)?)
@@ -1075,11 +1079,11 @@ pub fn run() {
                     .item(&MenuItemBuilder::new("Debug mode enabled").id("debug_mode_enabled").build(app)?)
                     .build()?;
                 MenuBuilder::new(app)
-                    .items(&[&file_menu, &edit_menu, &search_menu, &model_menu, &view_menu, &help_menu, &debug_menu])
+                    .items(&[&file_menu, &edit_menu, &search_menu, &model_menu, &help_menu, &debug_menu])
                     .build()?
             } else {
                 MenuBuilder::new(app)
-                    .items(&[&file_menu, &edit_menu, &search_menu, &model_menu, &view_menu, &help_menu])
+                    .items(&[&file_menu, &edit_menu, &search_menu, &model_menu, &help_menu])
                     .build()?
             };
 
