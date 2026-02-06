@@ -43,8 +43,9 @@ pub fn thumbnail_is_current(thumb_path: &Path, source_path: &Path) -> bool {
     }
 }
 
-/// Generates a thumbnail for the given source image
-pub fn generate_thumbnail(source_path: &Path, thumb_path: &Path) -> Result<(), String> {
+/// Generates a thumbnail for the given source image.
+/// Optionally accepts a reusable Resizer to avoid per-image allocation in batch processing.
+pub fn generate_thumbnail(source_path: &Path, thumb_path: &Path, resizer: Option<&mut Resizer>) -> Result<(), String> {
     let ext = source_path
         .extension()
         .and_then(|e| e.to_str())
@@ -62,7 +63,7 @@ pub fn generate_thumbnail(source_path: &Path, thumb_path: &Path) -> Result<(), S
     let (target_width, target_height) = calculate_thumbnail_dimensions(width, height, THUMBNAIL_SIZE);
 
     // Resize using fast_image_resize (SIMD-accelerated)
-    let resized_rgba = fast_resize_rgba(&rgba_data, width, height, target_width, target_height)?;
+    let resized_rgba = fast_resize_rgba(&rgba_data, width, height, target_width, target_height, resizer)?;
 
     // Encode as WebP
     let encoder = webp::Encoder::from_rgba(&resized_rgba, target_width, target_height);
@@ -161,6 +162,7 @@ fn fast_resize_rgba(
     src_height: u32,
     dst_width: u32,
     dst_height: u32,
+    resizer: Option<&mut Resizer>,
 ) -> Result<Vec<u8>, String> {
     if src_width == 0 || src_height == 0 || dst_width == 0 || dst_height == 0 {
         return Err("Invalid image dimensions".to_string());
@@ -182,11 +184,18 @@ fn fast_resize_rgba(
 
     let mut dst_image = FirImage::new(dst_width, dst_height, PixelType::U8x4);
 
-    let mut resizer = Resizer::new();
-    // Use Lanczos3 to match previous quality
     let options = ResizeOptions::new().resize_alg(ResizeAlg::Convolution(
         fast_image_resize::FilterType::Bilinear,
     ));
+
+    let mut fallback_resizer;
+    let resizer = match resizer {
+        Some(r) => r,
+        None => {
+            fallback_resizer = Resizer::new();
+            &mut fallback_resizer
+        }
+    };
 
     resizer
         .resize(&src_image, &mut dst_image, Some(&options))
@@ -202,7 +211,7 @@ pub fn get_thumbnail_path_for_asset(thumbnails_dir: &Path, source_path: &Path) -
 
     // Generate if missing or stale
     if !thumbnail_is_current(&thumb_path, source_path) {
-        generate_thumbnail(source_path, &thumb_path)?;
+        generate_thumbnail(source_path, &thumb_path, None)?;
     }
 
     // Return absolute path as string for asset protocol
@@ -217,7 +226,7 @@ pub fn get_thumbnail_base64(thumbnails_dir: &Path, source_path: &Path) -> Result
 
     // Generate if missing or stale
     if !thumbnail_is_current(&thumb_path, source_path) {
-        generate_thumbnail(source_path, &thumb_path)?;
+        generate_thumbnail(source_path, &thumb_path, None)?;
     }
 
     // Read the thumbnail file
@@ -229,12 +238,13 @@ pub fn get_thumbnail_base64(thumbnails_dir: &Path, source_path: &Path) -> Result
     Ok(format!("data:image/webp;base64,{}", base64_data))
 }
 
-/// Ensures a thumbnail exists for the given source image, generating if needed
-pub fn ensure_thumbnail(thumbnails_dir: &Path, source_path: &Path) -> Result<(), String> {
+/// Ensures a thumbnail exists for the given source image, generating if needed.
+/// Optionally accepts a reusable Resizer to avoid per-image allocation in batch processing.
+pub fn ensure_thumbnail(thumbnails_dir: &Path, source_path: &Path, resizer: Option<&mut Resizer>) -> Result<(), String> {
     let thumb_path = thumbnail_path(thumbnails_dir, source_path);
 
     if !thumbnail_is_current(&thumb_path, source_path) {
-        generate_thumbnail(source_path, &thumb_path)?;
+        generate_thumbnail(source_path, &thumb_path, resizer)?;
     }
 
     Ok(())

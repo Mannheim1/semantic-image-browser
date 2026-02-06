@@ -833,10 +833,11 @@ async fn scan_directory_internal(
                     let thumb_dir = &thumb_dir_clone;
                     let progress = progress_for_thumbnails.clone();
                     s.spawn(move || {
+                        let mut resizer = fast_image_resize::Resizer::new();
                         for (path_str, file_type, file_size) in chunk {
                             let source_path = Path::new(path_str);
                             let thumb_start = std::time::Instant::now();
-                            let thumb_result = thumbnail::ensure_thumbnail(thumb_dir, source_path);
+                            let thumb_result = thumbnail::ensure_thumbnail(thumb_dir, source_path, Some(&mut resizer));
                             let thumb_duration = thumb_start.elapsed();
 
                             if let Err(e) = thumb_result {
