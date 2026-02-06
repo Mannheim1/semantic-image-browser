@@ -10,7 +10,6 @@ use fast_image_resize::{images::Image as FirImage, ResizeAlg, ResizeOptions, Res
 use ort::execution_providers::CUDAExecutionProvider;
 use ort::session::Session;
 use ort::value::Value;
-use rayon::prelude::*;
 use std::path::Path;
 use std::sync::OnceLock;
 use tokenizers::Tokenizer;
@@ -80,7 +79,7 @@ fn add_dll_directory(dir: &Path) -> Result<(), String> {
 }
 
 /// Image size expected by the SigLIP2 model (256x256 for siglip2-base-patch16-256)
-const IMAGE_SIZE: u32 = 256;
+pub const IMAGE_SIZE: u32 = 256;
 
 /// Maximum sequence length for text tokenization
 const MAX_SEQ_LENGTH: usize = 64;
@@ -313,7 +312,7 @@ impl EmbeddingModel {
 /// 6. Return as flat NCHW format [1, 3, 256, 256] = 196608 floats
 ///
 /// Also returns timing data for benchmark logging.
-fn preprocess_image(path: &Path) -> Result<(Vec<f32>, PreprocessTiming), String> {
+pub fn preprocess_image(path: &Path) -> Result<(Vec<f32>, PreprocessTiming), String> {
     use std::time::Instant;
     let start = Instant::now();
 
@@ -595,58 +594,6 @@ pub struct PreprocessedBatch {
     pub errors: Vec<Option<String>>,
     /// Total number of images in this batch.
     pub count: usize,
-}
-
-/// Preprocess a batch of images in parallel using Rayon.
-///
-/// Each image is decoded, resized, and converted to a normalized tensor
-/// concurrently across all available CPU cores. Results are collected
-/// in order and concatenated into a single pixel buffer ready for GPU inference.
-pub fn preprocess_batch(image_paths: &[&Path]) -> PreprocessedBatch {
-    if image_paths.is_empty() {
-        return PreprocessedBatch {
-            pixel_data: Vec::new(),
-            valid_indices: Vec::new(),
-            timings: Vec::new(),
-            errors: Vec::new(),
-            count: 0,
-        };
-    }
-
-    let pixels_per_image = 3 * (IMAGE_SIZE * IMAGE_SIZE) as usize;
-
-    // Preprocess all images in parallel — each returns its own pixel buffer + timing
-    let parallel_results: Vec<Result<(Vec<f32>, PreprocessTiming), String>> = image_paths
-        .par_iter()
-        .map(|path| preprocess_image(path))
-        .collect();
-
-    // Assemble the results into a contiguous batch
-    let mut pixel_data: Vec<f32> = Vec::with_capacity(image_paths.len() * pixels_per_image);
-    let mut valid_indices: Vec<usize> = Vec::with_capacity(image_paths.len());
-    let mut timings: Vec<Option<PreprocessTiming>> = vec![None; image_paths.len()];
-    let mut errors: Vec<Option<String>> = vec![None; image_paths.len()];
-
-    for (idx, result) in parallel_results.into_iter().enumerate() {
-        match result {
-            Ok((pixels, timing)) => {
-                pixel_data.extend(pixels);
-                valid_indices.push(idx);
-                timings[idx] = Some(timing);
-            }
-            Err(e) => {
-                errors[idx] = Some(e);
-            }
-        }
-    }
-
-    PreprocessedBatch {
-        pixel_data,
-        valid_indices,
-        timings,
-        errors,
-        count: image_paths.len(),
-    }
 }
 
 /// GPU-optimized embedding model that processes images in batches.
