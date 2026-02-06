@@ -10,6 +10,7 @@ use fast_image_resize::{images::Image as FirImage, ResizeAlg, ResizeOptions, Res
 use ort::execution_providers::CUDAExecutionProvider;
 use ort::session::Session;
 use ort::value::Value;
+use rayon::prelude::*;
 use std::path::Path;
 use std::sync::OnceLock;
 use tokenizers::Tokenizer;
@@ -580,6 +581,74 @@ fn l2_normalize(v: &[f32]) -> Vec<f32> {
 /// Each image at 256x256 float32 RGB = ~768KB, so 32 images = ~24MB batch tensor.
 pub const GPU_BATCH_SIZE: usize = 32;
 
+/// Result of parallel preprocessing for a batch of images.
+/// Contains the concatenated pixel data ready for GPU inference,
+/// along with per-image tracking info for error handling and logging.
+pub struct PreprocessedBatch {
+    /// Concatenated f32 pixel data for all successfully preprocessed images.
+    pub pixel_data: Vec<f32>,
+    /// Indices (into the original path slice) of images that preprocessed successfully.
+    pub valid_indices: Vec<usize>,
+    /// Per-image preprocessing timings (None for images that failed).
+    pub timings: Vec<Option<PreprocessTiming>>,
+    /// Per-image error messages for images that failed preprocessing.
+    pub errors: Vec<Option<String>>,
+    /// Total number of images in this batch.
+    pub count: usize,
+}
+
+/// Preprocess a batch of images in parallel using Rayon.
+///
+/// Each image is decoded, resized, and converted to a normalized tensor
+/// concurrently across all available CPU cores. Results are collected
+/// in order and concatenated into a single pixel buffer ready for GPU inference.
+pub fn preprocess_batch(image_paths: &[&Path]) -> PreprocessedBatch {
+    if image_paths.is_empty() {
+        return PreprocessedBatch {
+            pixel_data: Vec::new(),
+            valid_indices: Vec::new(),
+            timings: Vec::new(),
+            errors: Vec::new(),
+            count: 0,
+        };
+    }
+
+    let pixels_per_image = 3 * (IMAGE_SIZE * IMAGE_SIZE) as usize;
+
+    // Preprocess all images in parallel — each returns its own pixel buffer + timing
+    let parallel_results: Vec<Result<(Vec<f32>, PreprocessTiming), String>> = image_paths
+        .par_iter()
+        .map(|path| preprocess_image(path))
+        .collect();
+
+    // Assemble the results into a contiguous batch
+    let mut pixel_data: Vec<f32> = Vec::with_capacity(image_paths.len() * pixels_per_image);
+    let mut valid_indices: Vec<usize> = Vec::with_capacity(image_paths.len());
+    let mut timings: Vec<Option<PreprocessTiming>> = vec![None; image_paths.len()];
+    let mut errors: Vec<Option<String>> = vec![None; image_paths.len()];
+
+    for (idx, result) in parallel_results.into_iter().enumerate() {
+        match result {
+            Ok((pixels, timing)) => {
+                pixel_data.extend(pixels);
+                valid_indices.push(idx);
+                timings[idx] = Some(timing);
+            }
+            Err(e) => {
+                errors[idx] = Some(e);
+            }
+        }
+    }
+
+    PreprocessedBatch {
+        pixel_data,
+        valid_indices,
+        timings,
+        errors,
+        count: image_paths.len(),
+    }
+}
+
 /// GPU-optimized embedding model that processes images in batches.
 /// Uses a single ONNX session to maximize GPU utilization.
 pub struct GpuEmbeddingModel {
@@ -637,52 +706,35 @@ impl GpuEmbeddingModel {
         })
     }
 
-    /// Generate embeddings for a batch of images.
+    /// Run GPU inference on a preprocessed batch, returning per-image embeddings.
     ///
-    /// This is the primary method for GPU inference - processing multiple images
-    /// in a single forward pass maximizes GPU utilization.
-    ///
-    /// Returns a Vec of Results, one per input image, preserving order.
-    /// Individual images may fail (e.g., corrupt file) without affecting others.
-    pub fn embed_images_batch(&mut self, image_paths: &[&Path]) -> Vec<Result<Vec<f32>, String>> {
+    /// Takes a `PreprocessedBatch` from `preprocess_batch()` and runs the vision model.
+    /// Returns a Vec of Results, one per image in the original batch (preserving order).
+    pub fn infer_batch(&mut self, batch: &PreprocessedBatch) -> Vec<Result<Vec<f32>, String>> {
         use std::time::Instant;
 
-        if image_paths.is_empty() {
-            return Vec::new();
-        }
-
-        // Preprocess all images, tracking which ones succeeded
-        let mut pixel_data: Vec<f32> = Vec::with_capacity(image_paths.len() * 3 * (IMAGE_SIZE * IMAGE_SIZE) as usize);
-        let mut valid_indices: Vec<usize> = Vec::with_capacity(image_paths.len());
-        let mut timings: Vec<Option<PreprocessTiming>> = vec![None; image_paths.len()];
-        let mut results: Vec<Result<Vec<f32>, String>> = vec![Err("Not processed".to_string()); image_paths.len()];
-
-        for (idx, path) in image_paths.iter().enumerate() {
-            match preprocess_image(path) {
-                Ok((pixels, timing)) => {
-                    pixel_data.extend(pixels);
-                    valid_indices.push(idx);
-                    timings[idx] = Some(timing);
-                }
-                Err(e) => {
-                    results[idx] = Err(e);
-                }
+        let mut results: Vec<Result<Vec<f32>, String>> = Vec::with_capacity(batch.count);
+        for i in 0..batch.count {
+            if let Some(err) = &batch.errors[i] {
+                results.push(Err(err.clone()));
+            } else {
+                results.push(Err("Not processed".to_string()));
             }
         }
 
-        if valid_indices.is_empty() {
+        if batch.valid_indices.is_empty() {
             return results;
         }
 
         // Run batched inference
-        let batch_size = valid_indices.len() as i64;
-        let shape = [batch_size, 3, IMAGE_SIZE as i64, IMAGE_SIZE as i64];
+        let num_valid = batch.valid_indices.len() as i64;
+        let shape = [num_valid, 3, IMAGE_SIZE as i64, IMAGE_SIZE as i64];
 
-        let input_tensor = match Value::from_array((shape, pixel_data)) {
+        let input_tensor = match Value::from_array((shape, batch.pixel_data.clone())) {
             Ok(t) => t,
             Err(e) => {
                 let err = format!("Failed to create batched vision input tensor: {}", e);
-                for &idx in &valid_indices {
+                for &idx in &batch.valid_indices {
                     results[idx] = Err(err.clone());
                 }
                 return results;
@@ -694,7 +746,7 @@ impl GpuEmbeddingModel {
             Ok(o) => o,
             Err(e) => {
                 let err = format!("Batched vision inference failed: {}", e);
-                for &idx in &valid_indices {
+                for &idx in &batch.valid_indices {
                     results[idx] = Err(err.clone());
                 }
                 return results;
@@ -706,7 +758,7 @@ impl GpuEmbeddingModel {
             Some(o) => o,
             None => {
                 let err = "pooler_output not found in vision model outputs".to_string();
-                for &idx in &valid_indices {
+                for &idx in &batch.valid_indices {
                     results[idx] = Err(err.clone());
                 }
                 return results;
@@ -717,7 +769,7 @@ impl GpuEmbeddingModel {
             Ok(d) => d,
             Err(e) => {
                 let err = format!("Failed to extract batched pooler_output tensor: {}", e);
-                for &idx in &valid_indices {
+                for &idx in &batch.valid_indices {
                     results[idx] = Err(err.clone());
                 }
                 return results;
@@ -729,9 +781,9 @@ impl GpuEmbeddingModel {
         let flat_data: Vec<f32> = data.iter().copied().collect();
 
         // Compute per-image share of inference time for logging
-        let per_image_inference = inference_time / valid_indices.len() as u32;
+        let per_image_inference = inference_time / batch.valid_indices.len() as u32;
 
-        for (batch_idx, &original_idx) in valid_indices.iter().enumerate() {
+        for (batch_idx, &original_idx) in batch.valid_indices.iter().enumerate() {
             let start = batch_idx * embedding_dim;
             let end = start + embedding_dim;
             if end <= flat_data.len() {
@@ -745,7 +797,7 @@ impl GpuEmbeddingModel {
             }
 
             // Log per-image timing
-            if let Some(timing) = &timings[original_idx] {
+            if let Some(timing) = &batch.timings[original_idx] {
                 benchmark::log_image(timing, per_image_inference, "gpu_batch");
             }
         }

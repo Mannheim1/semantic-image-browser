@@ -20,7 +20,7 @@ mod thumbnail;
 
 use config::AppConfig;
 use database::{FilterOptions, ImageInfo, ImageRecord, SortOptions};
-use embedding::{EmbeddingModel, GpuEmbeddingModel, GPU_BATCH_SIZE};
+use embedding::{EmbeddingModel, GpuEmbeddingModel, GPU_BATCH_SIZE, preprocess_batch};
 
 /// Maximum number of embedding model instances to keep in the pool.
 /// This limits RAM usage (~500MB per model) while enabling parallel processing.
@@ -934,7 +934,8 @@ async fn scan_directory_internal(
                         (results.into_inner().unwrap(), errors.into_inner().unwrap())
                     }
                     EmbeddingBackend::Gpu(model_mutex) => {
-                        // GPU mode: batched inference for maximum GPU utilization
+                        // GPU mode: double-buffered pipeline for maximum GPU utilization.
+                        // While the GPU infers batch N, CPU threads preprocess batch N+1.
                         let mut results: Vec<Option<Vec<f32>>> = vec![None; paths_for_embeddings.len()];
                         let mut errors: Vec<String> = Vec::new();
 
@@ -947,31 +948,67 @@ async fn scan_directory_internal(
                             }
                         };
 
-                        // Process images in batches
-                        for batch_start in (0..paths_for_embeddings.len()).step_by(GPU_BATCH_SIZE) {
-                            let batch_end = (batch_start + GPU_BATCH_SIZE).min(paths_for_embeddings.len());
-                            let batch_paths: Vec<&Path> = paths_for_embeddings[batch_start..batch_end]
+                        // Collect batch boundaries
+                        let total = paths_for_embeddings.len();
+                        let batch_ranges: Vec<(usize, usize)> = (0..total)
+                            .step_by(GPU_BATCH_SIZE)
+                            .map(|start| (start, (start + GPU_BATCH_SIZE).min(total)))
+                            .collect();
+
+                        if !batch_ranges.is_empty() {
+                            // Preprocess first batch on CPU threads (no GPU work to overlap yet)
+                            let first = &batch_ranges[0];
+                            let first_paths: Vec<&Path> = paths_for_embeddings[first.0..first.1]
                                 .iter()
                                 .map(|p| Path::new(p.as_str()))
                                 .collect();
+                            let mut current_batch = preprocess_batch(&first_paths);
+                            let mut current_range = first.clone();
 
-                            let batch_results = model.embed_images_batch(&batch_paths);
+                            for batch_idx in 0..batch_ranges.len() {
+                                // Spawn preprocessing of the NEXT batch on a background thread
+                                // while we run GPU inference on the current batch
+                                let next_handle = if batch_idx + 1 < batch_ranges.len() {
+                                    let next = &batch_ranges[batch_idx + 1];
+                                    let next_paths: Vec<std::path::PathBuf> = paths_for_embeddings[next.0..next.1]
+                                        .iter()
+                                        .map(|p| std::path::PathBuf::from(p.as_str()))
+                                        .collect();
+                                    Some(std::thread::spawn(move || {
+                                        let path_refs: Vec<&Path> = next_paths.iter().map(|p| p.as_path()).collect();
+                                        preprocess_batch(&path_refs)
+                                    }))
+                                } else {
+                                    None
+                                };
 
-                            for (offset, result) in batch_results.into_iter().enumerate() {
-                                let idx = batch_start + offset;
-                                match result {
-                                    Ok(emb) => {
-                                        results[idx] = Some(emb);
+                                // Run GPU inference on current batch
+                                let batch_results = model.infer_batch(&current_batch);
+
+                                for (offset, result) in batch_results.into_iter().enumerate() {
+                                    let idx = current_range.0 + offset;
+                                    match result {
+                                        Ok(emb) => {
+                                            results[idx] = Some(emb);
+                                        }
+                                        Err(e) => {
+                                            errors.push(format!(
+                                                "Embedding error for {}: {}",
+                                                paths_for_embeddings[idx], e
+                                            ));
+                                        }
                                     }
-                                    Err(e) => {
-                                        errors.push(format!(
-                                            "Embedding error for {}: {}",
-                                            paths_for_embeddings[idx], e
-                                        ));
+                                    if let Some(progress) = &progress_for_embeddings {
+                                        progress.increment();
                                     }
                                 }
-                                if let Some(progress) = &progress_for_embeddings {
-                                    progress.increment();
+
+                                // Collect the next preprocessed batch (it ran in parallel with inference)
+                                if let Some(handle) = next_handle {
+                                    current_batch = handle.join().unwrap_or_else(|_| {
+                                        preprocess_batch(&[]) // empty batch on panic
+                                    });
+                                    current_range = batch_ranges[batch_idx + 1].clone();
                                 }
                             }
                         }
