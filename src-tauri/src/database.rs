@@ -483,6 +483,7 @@ pub async fn get_all_images(table: &Table) -> Result<Vec<ImageInfo>, String> {
             "created_at".to_string(),
             "modified_at".to_string(),
         ]))
+        .limit(100)
         .execute()
         .await
         .map_err(|e: lancedb::Error| e.to_string())?
