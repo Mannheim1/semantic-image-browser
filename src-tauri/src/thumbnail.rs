@@ -191,7 +191,7 @@ fn fast_resize_rgba(
     let mut resizer = Resizer::new();
     // Use Lanczos3 to match previous quality
     let options = ResizeOptions::new().resize_alg(ResizeAlg::Convolution(
-        fast_image_resize::FilterType::Lanczos3,
+        fast_image_resize::FilterType::Bilinear,
     ));
 
     resizer
