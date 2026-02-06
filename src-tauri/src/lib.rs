@@ -20,7 +20,8 @@ mod thumbnail;
 
 use config::AppConfig;
 use database::{FilterOptions, ImageInfo, ImageRecord, SortOptions};
-use embedding::{EmbeddingModel, GpuEmbeddingModel, GPU_BATCH_SIZE, preprocess_batch};
+use benchmark::PreprocessTiming;
+use embedding::{EmbeddingModel, GpuEmbeddingModel, GPU_BATCH_SIZE, PreprocessedBatch, preprocess_image, IMAGE_SIZE};
 
 /// Maximum number of embedding model instances to keep in the pool.
 /// This limits RAM usage (~500MB per model) while enabling parallel processing.
@@ -934,12 +935,16 @@ async fn scan_directory_internal(
                         (results.into_inner().unwrap(), errors.into_inner().unwrap())
                     }
                     EmbeddingBackend::Gpu(model_mutex) => {
-                        // GPU mode: double-buffered pipeline for maximum GPU utilization.
-                        // While the GPU infers batch N, CPU threads preprocess batch N+1.
+                        // GPU mode: channel-based pipeline for maximum GPU utilization.
+                        // A producer thread uses Rayon to preprocess images continuously,
+                        // sending results through a bounded channel. The consumer (this thread)
+                        // collects GPU_BATCH_SIZE preprocessed images, then runs GPU inference.
+                        // The bounded channel keeps ~2 batches buffered so the GPU rarely waits.
+                        use std::sync::mpsc;
+
                         let mut results: Vec<Option<Vec<f32>>> = vec![None; paths_for_embeddings.len()];
                         let mut errors: Vec<String> = Vec::new();
 
-                        // Lock the GPU model for the entire embedding phase
                         let mut model = match model_mutex.lock() {
                             Ok(m) => m,
                             Err(e) => {
@@ -948,70 +953,111 @@ async fn scan_directory_internal(
                             }
                         };
 
-                        // Collect batch boundaries
-                        let total = paths_for_embeddings.len();
-                        let batch_ranges: Vec<(usize, usize)> = (0..total)
-                            .step_by(GPU_BATCH_SIZE)
-                            .map(|start| (start, (start + GPU_BATCH_SIZE).min(total)))
+                        // Bounded channel: buffer up to 2 batches worth of preprocessed images
+                        // so the CPU stays ahead of the GPU without unbounded memory growth.
+                        let (tx, rx) = mpsc::sync_channel::<(usize, Result<(Vec<f32>, PreprocessTiming), String>)>(GPU_BATCH_SIZE * 2);
+
+                        // Producer: preprocess all images in parallel via Rayon
+                        let paths_owned: Vec<std::path::PathBuf> = paths_for_embeddings
+                            .iter()
+                            .map(|p| std::path::PathBuf::from(p.as_str()))
                             .collect();
 
-                        if !batch_ranges.is_empty() {
-                            // Preprocess first batch on CPU threads (no GPU work to overlap yet)
-                            let first = &batch_ranges[0];
-                            let first_paths: Vec<&Path> = paths_for_embeddings[first.0..first.1]
-                                .iter()
-                                .map(|p| Path::new(p.as_str()))
-                                .collect();
-                            let mut current_batch = preprocess_batch(&first_paths);
-                            let mut current_range = first.clone();
+                        std::thread::spawn(move || {
+                            use rayon::prelude::*;
+                            paths_owned.par_iter().enumerate().for_each(|(idx, path)| {
+                                let result = preprocess_image(path.as_path());
+                                let _ = tx.send((idx, result)); // fails only if receiver dropped
+                            });
+                            // tx drops here, closing the channel
+                        });
 
-                            for batch_idx in 0..batch_ranges.len() {
-                                // Spawn preprocessing of the NEXT batch on a background thread
-                                // while we run GPU inference on the current batch
-                                let next_handle = if batch_idx + 1 < batch_ranges.len() {
-                                    let next = &batch_ranges[batch_idx + 1];
-                                    let next_paths: Vec<std::path::PathBuf> = paths_for_embeddings[next.0..next.1]
-                                        .iter()
-                                        .map(|p| std::path::PathBuf::from(p.as_str()))
-                                        .collect();
-                                    Some(std::thread::spawn(move || {
-                                        let path_refs: Vec<&Path> = next_paths.iter().map(|p| p.as_path()).collect();
-                                        preprocess_batch(&path_refs)
-                                    }))
-                                } else {
-                                    None
-                                };
+                        // Consumer: collect preprocessed images into batches, run GPU inference
+                        let pixels_per_image = 3 * (IMAGE_SIZE as usize * IMAGE_SIZE as usize);
+                        let mut batch_pixel_data: Vec<f32> = Vec::with_capacity(GPU_BATCH_SIZE * pixels_per_image);
+                        let mut batch_indices: Vec<usize> = Vec::with_capacity(GPU_BATCH_SIZE);
+                        let mut batch_timings: Vec<(usize, PreprocessTiming)> = Vec::with_capacity(GPU_BATCH_SIZE);
 
-                                // Run GPU inference on current batch
-                                let batch_results = model.infer_batch(&current_batch);
+                        let flush_batch = |model: &mut std::sync::MutexGuard<'_, GpuEmbeddingModel>,
+                                           pixel_data: &mut Vec<f32>,
+                                           indices: &mut Vec<usize>,
+                                           timings: &mut Vec<(usize, PreprocessTiming)>,
+                                           results: &mut Vec<Option<Vec<f32>>>,
+                                           errors: &mut Vec<String>,
+                                           paths: &[String],
+                                           progress: &Option<ScanProgressState>| {
+                            if indices.is_empty() {
+                                return;
+                            }
 
-                                for (offset, result) in batch_results.into_iter().enumerate() {
-                                    let idx = current_range.0 + offset;
-                                    match result {
-                                        Ok(emb) => {
-                                            results[idx] = Some(emb);
-                                        }
-                                        Err(e) => {
-                                            errors.push(format!(
-                                                "Embedding error for {}: {}",
-                                                paths_for_embeddings[idx], e
-                                            ));
-                                        }
+                            let batch = PreprocessedBatch {
+                                pixel_data: std::mem::take(pixel_data),
+                                valid_indices: (0..indices.len()).collect(),
+                                timings: (0..indices.len()).map(|i| {
+                                    timings.iter().find(|(pos, _)| *pos == i).map(|(_, t)| t.clone())
+                                }).collect(),
+                                errors: vec![None; indices.len()],
+                                count: indices.len(),
+                            };
+
+                            let batch_results = model.infer_batch(&batch);
+
+                            for (batch_pos, result) in batch_results.into_iter().enumerate() {
+                                let original_idx = indices[batch_pos];
+                                match result {
+                                    Ok(emb) => {
+                                        results[original_idx] = Some(emb);
                                     }
+                                    Err(e) => {
+                                        errors.push(format!(
+                                            "Embedding error for {}: {}",
+                                            paths[original_idx], e
+                                        ));
+                                    }
+                                }
+                                if let Some(progress) = progress {
+                                    progress.increment();
+                                }
+                            }
+
+                            indices.clear();
+                            timings.clear();
+                        };
+
+                        for (original_idx, result) in rx.iter() {
+                            match result {
+                                Ok((pixels, timing)) => {
+                                    let batch_pos = batch_indices.len();
+                                    batch_pixel_data.extend(pixels);
+                                    batch_indices.push(original_idx);
+                                    batch_timings.push((batch_pos, timing));
+
+                                    if batch_indices.len() >= GPU_BATCH_SIZE {
+                                        flush_batch(
+                                            &mut model, &mut batch_pixel_data, &mut batch_indices,
+                                            &mut batch_timings, &mut results, &mut errors,
+                                            &paths_for_embeddings, &progress_for_embeddings,
+                                        );
+                                    }
+                                }
+                                Err(e) => {
+                                    errors.push(format!(
+                                        "Embedding error for {}: {}",
+                                        paths_for_embeddings[original_idx], e
+                                    ));
                                     if let Some(progress) = &progress_for_embeddings {
                                         progress.increment();
                                     }
                                 }
-
-                                // Collect the next preprocessed batch (it ran in parallel with inference)
-                                if let Some(handle) = next_handle {
-                                    current_batch = handle.join().unwrap_or_else(|_| {
-                                        preprocess_batch(&[]) // empty batch on panic
-                                    });
-                                    current_range = batch_ranges[batch_idx + 1].clone();
-                                }
                             }
                         }
+
+                        // Flush remaining images (final partial batch)
+                        flush_batch(
+                            &mut model, &mut batch_pixel_data, &mut batch_indices,
+                            &mut batch_timings, &mut results, &mut errors,
+                            &paths_for_embeddings, &progress_for_embeddings,
+                        );
 
                         (results, errors)
                     }
