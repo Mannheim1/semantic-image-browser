@@ -802,6 +802,9 @@ async fn scan_directory_internal(
     // Generate thumbnails and embeddings for new/updated images
     if !paths_needing_processing.is_empty() {
         let thumb_dir_clone = thumb_dir.to_path_buf();
+        // Ensure thumbnails directory exists once before parallel generation
+        std::fs::create_dir_all(&thumb_dir_clone)
+            .map_err(|e| format!("Failed to create thumbnails directory: {}", e))?;
         // Collect path, file_type, and file_size for thumbnail benchmarking
         let thumbnail_inputs: Vec<(String, String, u64)> = paths_needing_processing
             .iter()

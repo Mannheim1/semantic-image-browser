@@ -68,12 +68,6 @@ pub fn generate_thumbnail(source_path: &Path, thumb_path: &Path) -> Result<(), S
     let encoder = webp::Encoder::from_rgba(&resized_rgba, target_width, target_height);
     let webp_data = encoder.encode(WEBP_QUALITY);
 
-    // Ensure parent directory exists
-    if let Some(parent) = thumb_path.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|e| format!("Failed to create thumbnails directory: {}", e))?;
-    }
-
     // Write to disk
     fs::write(thumb_path, &*webp_data)
         .map_err(|e| format!("Failed to write thumbnail '{}': {}", thumb_path.display(), e))?;
