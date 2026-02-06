@@ -270,10 +270,19 @@ pub async fn upsert_images(table: &Table, records: Vec<ImageRecord>) -> Result<(
 }
 
 pub async fn remove_images(table: &Table, paths: &[String]) -> Result<(), String> {
-    for path in paths {
-        let escaped = escape_sql_string(path)?;
+    if paths.is_empty() {
+        return Ok(());
+    }
+
+    // Batch deletes using IN clauses, chunked to keep SQL predicates reasonable
+    for chunk in paths.chunks(500) {
+        let escaped: Result<Vec<String>, String> = chunk
+            .iter()
+            .map(|p| escape_sql_string(p).map(|e| format!("'{}'", e)))
+            .collect();
+        let predicate = format!("path IN ({})", escaped?.join(", "));
         table
-            .delete(&format!("path = '{}'", escaped))
+            .delete(&predicate)
             .await
             .map_err(|e| e.to_string())?;
     }
