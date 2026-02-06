@@ -10,6 +10,7 @@ use tauri::menu::{CheckMenuItemBuilder, MenuBuilder, MenuItemBuilder, Predefined
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_opener::OpenerExt;
 
+mod benchmark;
 mod config;
 mod database;
 mod embedding;
@@ -748,6 +749,8 @@ async fn scan_directory_internal(
     model_id: Option<&str>,
     progress: Option<ScanProgressState>,
 ) -> Result<(ScanResult, HashSet<String>), String> {
+    benchmark::begin_scan_session();
+
     let dir_path = Path::new(dir);
     let files = tokio::task::spawn_blocking({
         let dir_path = dir_path.to_path_buf();
@@ -798,16 +801,17 @@ async fn scan_directory_internal(
     // Generate thumbnails and embeddings for new/updated images
     if !paths_needing_processing.is_empty() {
         let thumb_dir_clone = thumb_dir.to_path_buf();
-        let paths_for_thumbnails: Vec<String> = paths_needing_processing
+        // Collect path, file_type, and file_size for thumbnail benchmarking
+        let thumbnail_inputs: Vec<(String, String, u64)> = paths_needing_processing
             .iter()
-            .map(|(p, _)| p.clone())
+            .map(|(p, f)| (p.clone(), f.file_type.clone(), f.file_size))
             .collect();
         let progress_for_thumbnails = progress.clone();
 
         // Set up thumbnail phase progress
         if let Some(progress) = &progress {
             progress.set_phase("thumbnails");
-            progress.set_total(paths_for_thumbnails.len());
+            progress.set_total(thumbnail_inputs.len());
         }
 
         // Generate thumbnails in parallel
@@ -818,18 +822,28 @@ async fn scan_directory_internal(
                 let num_threads = std::thread::available_parallelism()
                     .map(|n| n.get())
                     .unwrap_or(4);
-                let chunk_size = (paths_for_thumbnails.len() + num_threads - 1) / num_threads;
+                let chunk_size = (thumbnail_inputs.len() + num_threads - 1) / num_threads;
 
-                for chunk in paths_for_thumbnails.chunks(chunk_size) {
+                for chunk in thumbnail_inputs.chunks(chunk_size) {
                     let errors = &errors;
                     let thumb_dir = &thumb_dir_clone;
                     let progress = progress_for_thumbnails.clone();
                     s.spawn(move || {
-                        for path_str in chunk {
+                        for (path_str, file_type, file_size) in chunk {
                             let source_path = Path::new(path_str);
-                            if let Err(e) = thumbnail::ensure_thumbnail(thumb_dir, source_path) {
+                            let thumb_start = std::time::Instant::now();
+                            let thumb_result = thumbnail::ensure_thumbnail(thumb_dir, source_path);
+                            let thumb_duration = thumb_start.elapsed();
+
+                            if let Err(e) = thumb_result {
                                 errors.lock().unwrap().push(format!("Thumbnail error for {}: {}", path_str, e));
                             }
+
+                            let filename = source_path.file_name()
+                                .unwrap_or_default()
+                                .to_string_lossy();
+                            benchmark::log_thumbnail(&filename, file_type, *file_size, thumb_duration);
+
                             if let Some(progress) = &progress {
                                 progress.increment();
                             }
@@ -1095,6 +1109,11 @@ pub fn run() {
             });
 
             let handle = app.handle().clone();
+
+            // Initialize benchmark CSV logger
+            let app_data = handle.path().app_local_data_dir().expect("Failed to get app data dir");
+            std::fs::create_dir_all(&app_data).ok();
+            benchmark::init(&app_data);
 
             // Phase 1: Quick initialization (database only) - blocks briefly
             // This is fast and required for the app to function at all

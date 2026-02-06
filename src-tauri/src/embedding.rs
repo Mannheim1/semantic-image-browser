@@ -14,6 +14,7 @@ use std::path::Path;
 use std::sync::OnceLock;
 use tokenizers::Tokenizer;
 
+use crate::benchmark::{self, PreprocessTiming};
 use crate::database::VISUAL_EMBEDDING_DIM;
 
 /// Stores the result of ORT initialization (success or error message).
@@ -166,11 +167,17 @@ impl EmbeddingModel {
     ///
     /// Returns a 768-dimensional L2-normalized vector.
     pub fn embed_image(&mut self, image_path: &Path) -> Result<Vec<f32>, String> {
+        use std::time::Instant;
+
         // Preprocess the image
-        let pixel_values = preprocess_image(image_path)?;
+        let (pixel_values, timing) = preprocess_image(image_path)?;
 
         // Run inference
+        let inference_start = Instant::now();
         let embedding = self.run_vision_inference(&pixel_values)?;
+        let inference_time = inference_start.elapsed();
+
+        benchmark::log_image(&timing, inference_time, "cpu");
 
         // L2 normalize
         Ok(l2_normalize(&embedding))
@@ -303,7 +310,9 @@ impl EmbeddingModel {
 /// 4. Convert to float and rescale to [0, 1]
 /// 5. Normalize with mean=0.5, std=0.5 (resulting in [-1, 1])
 /// 6. Return as flat NCHW format [1, 3, 256, 256] = 196608 floats
-fn preprocess_image(path: &Path) -> Result<Vec<f32>, String> {
+///
+/// Also returns timing data for benchmark logging.
+fn preprocess_image(path: &Path) -> Result<(Vec<f32>, PreprocessTiming), String> {
     use std::time::Instant;
     let start = Instant::now();
 
@@ -313,13 +322,19 @@ fn preprocess_image(path: &Path) -> Result<Vec<f32>, String> {
         .map(|e| e.to_lowercase())
         .unwrap_or_default();
 
-    // Load and decode image - use turbojpeg for JPEGs with scaled decoding
+    let file_size_bytes = std::fs::metadata(path)
+        .map(|m| m.len())
+        .unwrap_or(0);
+
+    // Load and decode image using format-specific decoders where available
     let (rgb_data, width, height) = if ext == "jpg" || ext == "jpeg" || ext == "jfif" {
         decode_jpeg_scaled(path)?
+    } else if ext == "png" {
+        decode_png(path)?
     } else {
         decode_other_format(path)?
     };
-    let load_time = start.elapsed();
+    let decode_time = start.elapsed();
 
     // Resize to IMAGE_SIZE x IMAGE_SIZE using fast_image_resize (SIMD-accelerated)
     let resize_start = Instant::now();
@@ -332,18 +347,20 @@ fn preprocess_image(path: &Path) -> Result<Vec<f32>, String> {
     let tensor_time = tensor_start.elapsed();
 
     let total = start.elapsed();
-    if total.as_millis() > 100 {
-        println!(
-            "[preprocess] {} | load: {:?} | resize: {:?} | tensor: {:?} | total: {:?}",
-            path.file_name().unwrap_or_default().to_string_lossy(),
-            load_time,
-            resize_time,
-            tensor_time,
-            total
-        );
-    }
 
-    Ok(pixel_values)
+    let timing = PreprocessTiming {
+        file: path.file_name().unwrap_or_default().to_string_lossy().to_string(),
+        file_type: ext,
+        file_size_bytes,
+        source_width: width,
+        source_height: height,
+        decode: decode_time,
+        resize: resize_time,
+        tensor: tensor_time,
+        total,
+    };
+
+    Ok((pixel_values, timing))
 }
 
 /// Decode a JPEG using turbojpeg with scaled decoding.
@@ -404,7 +421,81 @@ fn choose_jpeg_scale(width: usize, height: usize, target_size: usize) -> turbojp
     }
 }
 
-/// Decode non-JPEG formats using the image crate.
+/// Decode a PNG file directly using the png crate, bypassing DynamicImage.
+///
+/// This avoids the overhead of `image::open()` → `DynamicImage` → `.to_rgb8()`,
+/// which allocates intermediate buffers and does format sniffing.
+/// Uses `normalize_to_color8()` to guarantee 8-bit output for all PNG variants,
+/// then converts to RGB.
+fn decode_png(path: &Path) -> Result<(Vec<u8>, u32, u32), String> {
+    let file = std::fs::File::open(path)
+        .map_err(|e| format!("Failed to open PNG {}: {}", path.display(), e))?;
+    let reader = std::io::BufReader::new(file);
+
+    let mut decoder = png::Decoder::new(reader);
+    // Guarantee 8-bit output: expands palette→RGB, sub-8-bit gray→8-bit, 16-bit→8-bit
+    decoder.set_transformations(png::Transformations::normalize_to_color8());
+
+    let mut png_reader = decoder
+        .read_info()
+        .map_err(|e| format!("Failed to read PNG info {}: {}", path.display(), e))?;
+
+    let buf_size = png_reader
+        .output_buffer_size()
+        .ok_or_else(|| format!("PNG buffer size overflow: {}", path.display()))?;
+    let mut buf = vec![0u8; buf_size];
+
+    let info = png_reader
+        .next_frame(&mut buf)
+        .map_err(|e| format!("Failed to decode PNG frame {}: {}", path.display(), e))?;
+
+    let width = info.width;
+    let height = info.height;
+    let raw = &buf[..info.buffer_size()];
+
+    // Convert to RGB based on the decoded output color type
+    let rgb_data = match info.color_type {
+        png::ColorType::Rgb => raw.to_vec(),
+        png::ColorType::Rgba => {
+            let mut rgb = Vec::with_capacity((width * height * 3) as usize);
+            for chunk in raw.chunks_exact(4) {
+                rgb.extend_from_slice(&chunk[..3]);
+            }
+            rgb
+        }
+        png::ColorType::Grayscale => {
+            let mut rgb = Vec::with_capacity((width * height * 3) as usize);
+            for &g in &raw[..(width * height) as usize] {
+                rgb.push(g);
+                rgb.push(g);
+                rgb.push(g);
+            }
+            rgb
+        }
+        png::ColorType::GrayscaleAlpha => {
+            let mut rgb = Vec::with_capacity((width * height * 3) as usize);
+            for chunk in raw.chunks_exact(2) {
+                let g = chunk[0];
+                rgb.push(g);
+                rgb.push(g);
+                rgb.push(g);
+            }
+            rgb
+        }
+        png::ColorType::Indexed => {
+            // With normalize_to_color8(), palette is expanded to Rgb or Rgba.
+            // This branch should not be reached.
+            return Err(format!(
+                "Unexpected indexed color type after expansion in {}",
+                path.display()
+            ));
+        }
+    };
+
+    Ok((rgb_data, width, height))
+}
+
+/// Decode non-JPEG/non-PNG formats using the image crate.
 fn decode_other_format(path: &Path) -> Result<(Vec<u8>, u32, u32), String> {
     let img = image::open(path)
         .map_err(|e| format!("Failed to open image {}: {}", path.display(), e))?;
@@ -560,33 +651,30 @@ impl GpuEmbeddingModel {
             return Vec::new();
         }
 
-        let batch_start_time = Instant::now();
-
         // Preprocess all images, tracking which ones succeeded
-        let preprocess_start = Instant::now();
         let mut pixel_data: Vec<f32> = Vec::with_capacity(image_paths.len() * 3 * (IMAGE_SIZE * IMAGE_SIZE) as usize);
         let mut valid_indices: Vec<usize> = Vec::with_capacity(image_paths.len());
+        let mut timings: Vec<Option<PreprocessTiming>> = vec![None; image_paths.len()];
         let mut results: Vec<Result<Vec<f32>, String>> = vec![Err("Not processed".to_string()); image_paths.len()];
 
         for (idx, path) in image_paths.iter().enumerate() {
             match preprocess_image(path) {
-                Ok(pixels) => {
+                Ok((pixels, timing)) => {
                     pixel_data.extend(pixels);
                     valid_indices.push(idx);
+                    timings[idx] = Some(timing);
                 }
                 Err(e) => {
                     results[idx] = Err(e);
                 }
             }
         }
-        let preprocess_time = preprocess_start.elapsed();
 
         if valid_indices.is_empty() {
             return results;
         }
 
         // Run batched inference
-        let tensor_start = Instant::now();
         let batch_size = valid_indices.len() as i64;
         let shape = [batch_size, 3, IMAGE_SIZE as i64, IMAGE_SIZE as i64];
 
@@ -600,7 +688,6 @@ impl GpuEmbeddingModel {
                 return results;
             }
         };
-        let tensor_time = tensor_start.elapsed();
 
         let inference_start = Instant::now();
         let outputs = match self.vision_session.run(ort::inputs!["pixel_values" => input_tensor]) {
@@ -615,7 +702,6 @@ impl GpuEmbeddingModel {
         };
         let inference_time = inference_start.elapsed();
 
-        let postprocess_start = Instant::now();
         let pooler_output = match outputs.get("pooler_output") {
             Some(o) => o,
             None => {
@@ -639,9 +725,12 @@ impl GpuEmbeddingModel {
         };
 
         // Split the batched output into individual embeddings
-        // data is a CowArray, iterate to extract each embedding
         let embedding_dim = VISUAL_EMBEDDING_DIM as usize;
         let flat_data: Vec<f32> = data.iter().copied().collect();
+
+        // Compute per-image share of inference time for logging
+        let per_image_inference = inference_time / valid_indices.len() as u32;
+
         for (batch_idx, &original_idx) in valid_indices.iter().enumerate() {
             let start = batch_idx * embedding_dim;
             let end = start + embedding_dim;
@@ -654,19 +743,12 @@ impl GpuEmbeddingModel {
                     start, end, flat_data.len()
                 ));
             }
-        }
-        let postprocess_time = postprocess_start.elapsed();
 
-        let total_time = batch_start_time.elapsed();
-        println!(
-            "[GPU Batch] {} images | preprocess: {:?} | tensor: {:?} | inference: {:?} | postprocess: {:?} | total: {:?}",
-            image_paths.len(),
-            preprocess_time,
-            tensor_time,
-            inference_time,
-            postprocess_time,
-            total_time
-        );
+            // Log per-image timing
+            if let Some(timing) = &timings[original_idx] {
+                benchmark::log_image(timing, per_image_inference, "gpu_batch");
+            }
+        }
 
         results
     }
