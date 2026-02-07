@@ -179,7 +179,7 @@ impl ScanProgressState {
     pub fn new(app: &AppHandle) -> Self {
         Self {
             app: app.clone(),
-            phase: Arc::new(std::sync::RwLock::new("thumbnails".to_string())),
+            phase: Arc::new(std::sync::RwLock::new("scanning".to_string())),
             total: Arc::new(AtomicUsize::new(0)),
             current: Arc::new(AtomicUsize::new(0)),
         }
@@ -960,14 +960,14 @@ async fn scan_directory_internal(
 
                 let (tx, rx) = mpsc::sync_channel::<(usize, Result<(Vec<f32>, PreprocessTiming), String>)>(GPU_BATCH_SIZE * 2);
 
+                let progress_for_consumer = progress.clone();
+
                 // Producer: decode, thumbnail, and preprocess in parallel
                 let inputs_owned: Vec<(usize, String, String, u64)> = processing_inputs
                     .iter()
                     .enumerate()
                     .map(|(i, (p, ft, fs))| (i, p.clone(), ft.clone(), *fs))
                     .collect();
-
-                let progress_for_consumer = progress.clone();
 
                 std::thread::spawn(move || {
                     use rayon::prelude::*;
@@ -1017,12 +1017,12 @@ async fn scan_directory_internal(
                 let pixels_per_image = 3 * (IMAGE_SIZE as usize * IMAGE_SIZE as usize);
                 let mut batch_pixel_data: Vec<f32> = Vec::with_capacity(GPU_BATCH_SIZE * pixels_per_image);
                 let mut batch_indices: Vec<usize> = Vec::with_capacity(GPU_BATCH_SIZE);
-                let mut batch_timings: Vec<(usize, PreprocessTiming)> = Vec::with_capacity(GPU_BATCH_SIZE);
+                let mut batch_timings: Vec<PreprocessTiming> = Vec::with_capacity(GPU_BATCH_SIZE);
 
                 let flush_batch = |model: &mut std::sync::MutexGuard<'_, GpuEmbeddingModel>,
                                    pixel_data: &mut Vec<f32>,
                                    indices: &mut Vec<usize>,
-                                   timings: &mut Vec<(usize, PreprocessTiming)>,
+                                   timings: &mut Vec<PreprocessTiming>,
                                    results: &mut Vec<Option<Vec<f32>>>,
                                    errors: &mut Vec<String>,
                                    paths: &[String],
@@ -1034,9 +1034,7 @@ async fn scan_directory_internal(
                     let batch = PreprocessedBatch {
                         pixel_data: std::mem::take(pixel_data),
                         valid_indices: (0..indices.len()).collect(),
-                        timings: (0..indices.len()).map(|i| {
-                            timings.iter().find(|(pos, _)| *pos == i).map(|(_, t)| t.clone())
-                        }).collect(),
+                        timings: std::mem::take(timings).into_iter().map(Some).collect(),
                         errors: vec![None; indices.len()],
                         count: indices.len(),
                     };
@@ -1062,16 +1060,14 @@ async fn scan_directory_internal(
                     }
 
                     indices.clear();
-                    timings.clear();
                 };
 
                 for (original_idx, result) in rx.iter() {
                     match result {
                         Ok((pixels, timing)) => {
-                            let batch_pos = batch_indices.len();
                             batch_pixel_data.extend(pixels);
                             batch_indices.push(original_idx);
-                            batch_timings.push((batch_pos, timing));
+                            batch_timings.push(timing);
 
                             if batch_indices.len() >= GPU_BATCH_SIZE {
                                 flush_batch(
