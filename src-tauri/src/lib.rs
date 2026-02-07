@@ -826,15 +826,21 @@ async fn scan_directory_internal(
                 let num_threads = std::thread::available_parallelism()
                     .map(|n| n.get())
                     .unwrap_or(4);
-                let chunk_size = (thumbnail_inputs.len() + num_threads - 1) / num_threads;
 
-                for chunk in thumbnail_inputs.chunks(chunk_size) {
+                // Round-robin distribution: interleave images across threads so each
+                // gets a mix of sizes/formats instead of contiguous blocks from one folder.
+                let mut thread_buckets: Vec<Vec<&(String, String, u64)>> = (0..num_threads).map(|_| Vec::new()).collect();
+                for (i, item) in thumbnail_inputs.iter().enumerate() {
+                    thread_buckets[i % num_threads].push(item);
+                }
+
+                for bucket in thread_buckets {
                     let errors = &errors;
                     let thumb_dir = &thumb_dir_clone;
                     let progress = progress_for_thumbnails.clone();
                     s.spawn(move || {
                         let mut resizer = fast_image_resize::Resizer::new();
-                        for (path_str, file_type, file_size) in chunk {
+                        for (path_str, file_type, file_size) in bucket {
                             let source_path = Path::new(path_str);
                             let thumb_start = std::time::Instant::now();
                             let thumb_result = thumbnail::ensure_thumbnail(thumb_dir, source_path, Some(&mut resizer));
