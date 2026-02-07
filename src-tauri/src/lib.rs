@@ -913,7 +913,7 @@ async fn scan_directory_internal(
                                     .unwrap_or_default().to_string_lossy();
 
                                 match preprocess_image_from_rgb(
-                                    &rgb_data, width, height, &filename, file_type, *file_size,
+                                    &rgb_data, width, height, &filename, file_type, *file_size, Some(&mut resizer),
                                 ) {
                                     Ok((pixel_values, mut timing)) => {
                                         timing.decode = decode_time;
@@ -1005,7 +1005,7 @@ async fn scan_directory_internal(
                                 let filename = source_path.file_name()
                                     .unwrap_or_default().to_string_lossy();
                                 match preprocess_image_from_rgb(
-                                    &rgb_data, width, height, &filename, file_type, *file_size,
+                                    &rgb_data, width, height, &filename, file_type, *file_size, None,
                                 ) {
                                     Ok((pixel_values, mut timing)) => {
                                         timing.decode = decode_time;
