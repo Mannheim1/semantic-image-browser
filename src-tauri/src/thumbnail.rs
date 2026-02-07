@@ -1,4 +1,3 @@
-use base64::{engine::general_purpose::STANDARD, Engine};
 use fast_image_resize::{images::Image as FirImage, ResizeAlg, ResizeOptions, Resizer, PixelType};
 use sha2::{Digest, Sha256};
 use std::fs;
@@ -90,8 +89,9 @@ fn calculate_thumbnail_dimensions(width: u32, height: u32, max_size: u32) -> (u3
     }
 }
 
-/// Resize RGB image data using fast_image_resize.
-fn fast_resize_rgb(
+/// Resize RGB image data using fast_image_resize (SIMD-accelerated, bilinear).
+/// Optionally accepts a reusable Resizer to avoid per-image allocation in batch processing.
+pub fn fast_resize_rgb(
     rgb_data: &[u8],
     src_width: u32,
     src_height: u32,
@@ -151,26 +151,6 @@ pub fn get_thumbnail_path_for_asset(thumbnails_dir: &Path, source_path: &Path) -
 
     // Return absolute path as string for asset protocol
     Ok(thumb_path.to_string_lossy().to_string())
-}
-
-/// Gets a thumbnail as a base64 data URL, generating it if needed.
-/// DEPRECATED: Use get_thumbnail_path_for_asset with convertFileSrc instead for better performance.
-#[allow(dead_code)]
-pub fn get_thumbnail_base64(thumbnails_dir: &Path, source_path: &Path) -> Result<String, String> {
-    let thumb_path = thumbnail_path(thumbnails_dir, source_path);
-
-    // Generate if missing or stale
-    if !thumbnail_is_current(&thumb_path, source_path) {
-        generate_thumbnail(source_path, &thumb_path, None)?;
-    }
-
-    // Read the thumbnail file
-    let data = fs::read(&thumb_path)
-        .map_err(|e| format!("Failed to read thumbnail '{}': {}", thumb_path.display(), e))?;
-
-    // Return as base64 data URL
-    let base64_data = STANDARD.encode(&data);
-    Ok(format!("data:image/webp;base64,{}", base64_data))
 }
 
 /// Ensures a thumbnail exists for the given source image, generating if needed.

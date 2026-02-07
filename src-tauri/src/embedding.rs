@@ -6,7 +6,6 @@
 //! - Text tokenization
 //! - Generating embeddings for images and text queries
 
-use fast_image_resize::{images::Image as FirImage, ResizeAlg, ResizeOptions, Resizer, PixelType};
 use ort::execution_providers::CUDAExecutionProvider;
 use ort::session::Session;
 use ort::value::Value;
@@ -581,34 +580,7 @@ fn fast_resize_rgb(
     dst_width: u32,
     dst_height: u32,
 ) -> Result<Vec<u8>, String> {
-    if src_width == 0 || src_height == 0 || dst_width == 0 || dst_height == 0 {
-        return Err("Invalid image dimensions".to_string());
-    }
-
-    // Create source image - need owned copy since from_slice_u8 requires mutable
-    let mut rgb_copy = rgb_data.to_vec();
-    let src_image = FirImage::from_slice_u8(
-        src_width,
-        src_height,
-        &mut rgb_copy,
-        PixelType::U8x3,
-    )
-    .map_err(|e| format!("Failed to create source image: {}", e))?;
-
-    // Create destination image
-    let mut dst_image = FirImage::new(dst_width, dst_height, PixelType::U8x3);
-
-    // Create resizer with bilinear algorithm (matches SigLIP2 preprocessing)
-    let mut resizer = Resizer::new();
-    let options = ResizeOptions::new().resize_alg(ResizeAlg::Convolution(
-        fast_image_resize::FilterType::Bilinear,
-    ));
-
-    resizer
-        .resize(&src_image, &mut dst_image, Some(&options))
-        .map_err(|e| format!("Failed to resize image: {}", e))?;
-
-    Ok(dst_image.into_vec())
+    crate::thumbnail::fast_resize_rgb(rgb_data, src_width, src_height, dst_width, dst_height, None)
 }
 
 /// Convert RGB u8 data to NCHW float tensor with normalization.
