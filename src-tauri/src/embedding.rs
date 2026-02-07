@@ -321,8 +321,7 @@ impl EmbeddingModel {
 ///
 /// Also returns timing data for benchmark logging.
 pub fn preprocess_image(path: &Path) -> Result<(Vec<f32>, PreprocessTiming), String> {
-    use std::time::Instant;
-    let start = Instant::now();
+    let start = std::time::Instant::now();
 
     let ext = path
         .extension()
@@ -337,29 +336,11 @@ pub fn preprocess_image(path: &Path) -> Result<(Vec<f32>, PreprocessTiming), Str
     let (rgb_data, width, height) = decode_image_to_rgb(path)?;
     let decode_time = start.elapsed();
 
-    // Resize to IMAGE_SIZE x IMAGE_SIZE using fast_image_resize (SIMD-accelerated)
-    let resize_start = Instant::now();
-    let resized_rgb = crate::thumbnail::fast_resize_rgb(&rgb_data, width, height, IMAGE_SIZE, IMAGE_SIZE, None)?;
-    let resize_time = resize_start.elapsed();
-
-    // Convert to NCHW float tensor with normalization
-    let tensor_start = Instant::now();
-    let pixel_values = rgb_to_nchw_normalized(&resized_rgb, IMAGE_SIZE, IMAGE_SIZE);
-    let tensor_time = tensor_start.elapsed();
-
-    let total = start.elapsed();
-
-    let timing = PreprocessTiming {
-        file: path.file_name().unwrap_or_default().to_string_lossy().to_string(),
-        file_type: ext,
-        file_size_bytes,
-        source_width: width,
-        source_height: height,
-        decode: decode_time,
-        resize: resize_time,
-        tensor: tensor_time,
-        total,
-    };
+    let filename = path.file_name().unwrap_or_default().to_string_lossy();
+    let (pixel_values, mut timing) =
+        preprocess_image_from_rgb(&rgb_data, width, height, &filename, &ext, file_size_bytes)?;
+    timing.decode = decode_time;
+    timing.total = timing.total + decode_time;
 
     Ok((pixel_values, timing))
 }
