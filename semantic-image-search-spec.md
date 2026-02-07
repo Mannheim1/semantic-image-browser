@@ -34,6 +34,7 @@ Connect all three search modes to UI, result source indicators, settings.
 ### Core Search
 - Single search bar for semantic queries
 - Results displayed as thumbnail grid with filenames
+- Empty query displays up to 100 indexed images (default browse view limit)
 - Double-click opens image in OS default viewer
 - Right-click "Show in folder" opens file explorer with image selected
 - Right-click "Find similar" searches using that image as input
@@ -147,14 +148,14 @@ Thumbnail filenames are SHA-256 hashes of the original image's absolute path, en
 - **256px size**: Balances file size with display quality. Supports 2x DPI scaling (displayed at ~150px in the grid).
 - **WebP format**: Smaller files than PNG/JPEG at equivalent quality. Quality 80 provides good balance of size (~10-30KB) and visual fidelity.
 - **No database storage for thumbnails**: The thumbnail path is derived from `sha256(image_path)`, so no additional database column is needed. Existence and freshness are checked via filesystem.
-- **Lanczos3 resampling**: High-quality downscaling filter that preserves detail and reduces aliasing artifacts.
+- **Bilinear resampling**: Uses fast SIMD resizing for good quality with better throughput during large scans.
 - **Partial image handling**: If the `image` crate can decode any data from a corrupted file, we save that as the thumbnail. Only complete failures show a placeholder.
 
 #### Generation Pipeline
 1. During directory scan, check if thumbnail exists and is current
 2. If missing or stale (source file modified after thumbnail), generate new thumbnail
 3. Load source image using `image` crate
-4. Resize to fit within 256x256 (preserving aspect ratio) using Lanczos3 filter
+4. Resize to fit within 256x256 (preserving aspect ratio) using bilinear filter
 5. Encode as WebP with quality 80
 6. Write to `{app_data}/thumbnails/{hash}.webp`
 

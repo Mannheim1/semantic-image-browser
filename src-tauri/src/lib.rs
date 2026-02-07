@@ -1312,6 +1312,7 @@ pub fn run() {
                 model_id: RwLock::new(None),
             });
 
+            // TODO: Automatically trigger a full rescan of watched directories on app launch.
             // Phase 2: Heavy initialization (embedding models) - runs in background
             // This allows the UI to appear immediately while models load
             let handle_for_task = app.handle().clone();
