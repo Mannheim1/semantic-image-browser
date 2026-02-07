@@ -27,7 +27,7 @@ use std::time::Duration;
 /// Global benchmark log, initialized once per app lifetime.
 static BENCH_LOG: std::sync::OnceLock<Mutex<BenchLog>> = std::sync::OnceLock::new();
 
-const CSV_HEADER: &str = "timestamp,file,file_type,file_size_bytes,source_width,source_height,decode_ms,resize_ms,tensor_ms,preprocess_ms,inference_ms,thumbnail_ms,phase";
+const CSV_HEADER: &str = "timestamp,file,file_type,file_size_bytes,source_width,source_height,decode_ms,resize_ms,tensor_ms,preprocess_ms,inference_ms,phase";
 
 struct BenchLog {
     path: PathBuf,
@@ -136,7 +136,7 @@ pub fn log_image(timing: &PreprocessTiming, inference: Duration, phase: &str) {
 
     let _ = writeln!(
         f,
-        "{},{},{},{},{},{},{:.2},{:.2},{:.2},{:.2},{:.2},,{}",
+        "{},{},{},{},{},{},{:.2},{:.2},{:.2},{:.2},{:.2},{}",
         now_iso(),
         escape_csv(&timing.file),
         timing.file_type,
@@ -152,20 +152,3 @@ pub fn log_image(timing: &PreprocessTiming, inference: Duration, phase: &str) {
     );
 }
 
-/// Log a thumbnail generation timing for a single image.
-pub fn log_thumbnail(file: &str, file_type: &str, file_size_bytes: u64, thumbnail_duration: Duration) {
-    let Some(log) = BENCH_LOG.get() else { return };
-    let Ok(log) = log.lock() else { return };
-
-    let Ok(mut f) = OpenOptions::new().append(true).open(&log.path) else { return };
-
-    let _ = writeln!(
-        f,
-        "{},{},{},{},,,,,,,,,{:.2},thumbnail",
-        now_iso(),
-        escape_csv(file),
-        file_type,
-        file_size_bytes,
-        ms(thumbnail_duration),
-    );
-}
