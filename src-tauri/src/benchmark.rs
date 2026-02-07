@@ -15,8 +15,7 @@
 //! - tensor_ms: time to convert to NCHW float tensor
 //! - preprocess_ms: total preprocess time (decode + resize + tensor)
 //! - inference_ms: model inference time (per-image share for GPU batches)
-//! - thumbnail_ms: thumbnail generation time
-//! - phase: "cpu", "gpu_batch", or "thumbnail"
+//! - phase: "cpu" or "gpu_batch"
 
 use std::fs::{File, OpenOptions};
 use std::io::Write;
