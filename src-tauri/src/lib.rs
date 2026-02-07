@@ -204,6 +204,11 @@ impl ScanProgressState {
         self.emit();
     }
 
+    pub fn increment_by(&self, count: usize) {
+        self.current.fetch_add(count, Ordering::SeqCst);
+        self.emit();
+    }
+
     fn emit(&self) {
         let phase = self.phase.read().map(|p| p.clone()).unwrap_or_default();
         let current = self.current.load(Ordering::SeqCst) as u64;
@@ -376,8 +381,14 @@ async fn remove_watched_directory(app: AppHandle, state: tauri::State<'_, AppSta
         .collect();
 
     if !to_remove.is_empty() {
-        thumbnail::delete_thumbnails(&thumb_dir, &to_remove)?;
-        database::remove_images(&table, &to_remove).await?;
+        let progress = ScanProgressState::new(&app);
+        progress.set_phase("removing");
+        progress.set_total(to_remove.len());
+        for chunk in to_remove.chunks(500) {
+            thumbnail::delete_thumbnails(&thumb_dir, chunk)?;
+            database::remove_images(&table, chunk).await?;
+            progress.increment_by(chunk.len());
+        }
     }
 
     Ok(())
