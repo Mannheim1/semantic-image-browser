@@ -43,30 +43,30 @@ pub fn thumbnail_is_current(thumb_path: &Path, source_path: &Path) -> bool {
     }
 }
 
-/// Generates a thumbnail for the given source image.
+/// Generates a thumbnail for the given source image by decoding it from disk.
 /// Optionally accepts a reusable Resizer to avoid per-image allocation in batch processing.
 pub fn generate_thumbnail(source_path: &Path, thumb_path: &Path, resizer: Option<&mut Resizer>) -> Result<(), String> {
-    let ext = source_path
-        .extension()
-        .and_then(|e| e.to_str())
-        .map(|e| e.to_lowercase())
-        .unwrap_or_default();
+    let (rgb_data, width, height) = crate::embedding::decode_image_to_rgb(source_path)?;
+    generate_thumbnail_from_rgb(&rgb_data, width, height, thumb_path, resizer)
+}
 
-    // Load and decode - use turbojpeg for JPEGs with scaled decoding
-    let (rgba_data, width, height) = if ext == "jpg" || ext == "jpeg" || ext == "jfif" {
-        decode_jpeg_for_thumbnail(source_path)?
-    } else {
-        decode_other_for_thumbnail(source_path)?
-    };
-
+/// Generates a thumbnail from pre-decoded RGB pixel data.
+/// Used in the merged scan pipeline to avoid decoding the same image twice.
+pub fn generate_thumbnail_from_rgb(
+    rgb_data: &[u8],
+    width: u32,
+    height: u32,
+    thumb_path: &Path,
+    resizer: Option<&mut Resizer>,
+) -> Result<(), String> {
     // Calculate target dimensions preserving aspect ratio
     let (target_width, target_height) = calculate_thumbnail_dimensions(width, height, THUMBNAIL_SIZE);
 
     // Resize using fast_image_resize (SIMD-accelerated)
-    let resized_rgba = fast_resize_rgba(&rgba_data, width, height, target_width, target_height, resizer)?;
+    let resized_rgb = fast_resize_rgb(rgb_data, width, height, target_width, target_height, resizer)?;
 
     // Encode as WebP
-    let encoder = webp::Encoder::from_rgba(&resized_rgba, target_width, target_height);
+    let encoder = webp::Encoder::from_rgb(&resized_rgb, target_width, target_height);
     let webp_data = encoder.encode(WEBP_QUALITY);
 
     // Write to disk
@@ -74,71 +74,6 @@ pub fn generate_thumbnail(source_path: &Path, thumb_path: &Path, resizer: Option
         .map_err(|e| format!("Failed to write thumbnail '{}': {}", thumb_path.display(), e))?;
 
     Ok(())
-}
-
-/// Decode a JPEG using turbojpeg with scaled decoding for thumbnails.
-fn decode_jpeg_for_thumbnail(path: &Path) -> Result<(Vec<u8>, u32, u32), String> {
-    let jpeg_data = fs::read(path)
-        .map_err(|e| format!("Failed to read JPEG {}: {}", path.display(), e))?;
-
-    let mut decompressor = turbojpeg::Decompressor::new()
-        .map_err(|e| format!("Failed to create JPEG decompressor: {}", e))?;
-
-    let header = decompressor
-        .read_header(&jpeg_data)
-        .map_err(|e| format!("Failed to read JPEG header {}: {}", path.display(), e))?;
-
-    // Choose scaling factor - we want at least THUMBNAIL_SIZE on the smaller dimension
-    let scaling = choose_jpeg_scale(header.width, header.height, THUMBNAIL_SIZE as usize);
-    decompressor.set_scaling_factor(scaling);
-
-    let scaled_header = header.scaled(scaling);
-    let scaled_width = scaled_header.width;
-    let scaled_height = scaled_header.height;
-
-    // Decode to RGBA for WebP encoding
-    let mut rgba_data = vec![0u8; scaled_width * scaled_height * 4];
-    let image = turbojpeg::Image {
-        pixels: &mut rgba_data[..],
-        width: scaled_width,
-        pitch: scaled_width * 4,
-        height: scaled_height,
-        format: turbojpeg::PixelFormat::RGBA,
-    };
-
-    decompressor
-        .decompress(&jpeg_data, image)
-        .map_err(|e| format!("Failed to decompress JPEG {}: {}", path.display(), e))?;
-
-    Ok((rgba_data, scaled_width as u32, scaled_height as u32))
-}
-
-/// Choose the best JPEG scaling factor for thumbnail generation.
-fn choose_jpeg_scale(width: usize, height: usize, target_size: usize) -> turbojpeg::ScalingFactor {
-    let min_dim = width.min(height);
-
-    if min_dim / 8 >= target_size {
-        turbojpeg::ScalingFactor::ONE_EIGHTH
-    } else if min_dim / 4 >= target_size {
-        turbojpeg::ScalingFactor::ONE_QUARTER
-    } else if min_dim / 2 >= target_size {
-        turbojpeg::ScalingFactor::ONE_HALF
-    } else {
-        turbojpeg::ScalingFactor::ONE
-    }
-}
-
-/// Decode non-JPEG formats using the image crate.
-fn decode_other_for_thumbnail(path: &Path) -> Result<(Vec<u8>, u32, u32), String> {
-    let img = image::open(path)
-        .map_err(|e| format!("Failed to open image {}: {}", path.display(), e))?;
-
-    let rgba = img.to_rgba8();
-    let width = rgba.width();
-    let height = rgba.height();
-    let rgba_data = rgba.into_raw();
-
-    Ok((rgba_data, width, height))
 }
 
 /// Calculate thumbnail dimensions preserving aspect ratio.
@@ -155,9 +90,9 @@ fn calculate_thumbnail_dimensions(width: u32, height: u32, max_size: u32) -> (u3
     }
 }
 
-/// Resize RGBA image data using fast_image_resize.
-fn fast_resize_rgba(
-    rgba_data: &[u8],
+/// Resize RGB image data using fast_image_resize.
+fn fast_resize_rgb(
+    rgb_data: &[u8],
     src_width: u32,
     src_height: u32,
     dst_width: u32,
@@ -170,19 +105,19 @@ fn fast_resize_rgba(
 
     // If no resize needed, return original
     if src_width == dst_width && src_height == dst_height {
-        return Ok(rgba_data.to_vec());
+        return Ok(rgb_data.to_vec());
     }
 
-    let mut rgba_copy = rgba_data.to_vec();
+    let mut rgb_copy = rgb_data.to_vec();
     let src_image = FirImage::from_slice_u8(
         src_width,
         src_height,
-        &mut rgba_copy,
-        PixelType::U8x4,
+        &mut rgb_copy,
+        PixelType::U8x3,
     )
     .map_err(|e| format!("Failed to create source image: {}", e))?;
 
-    let mut dst_image = FirImage::new(dst_width, dst_height, PixelType::U8x4);
+    let mut dst_image = FirImage::new(dst_width, dst_height, PixelType::U8x3);
 
     let options = ResizeOptions::new().resize_alg(ResizeAlg::Convolution(
         fast_image_resize::FilterType::Bilinear,

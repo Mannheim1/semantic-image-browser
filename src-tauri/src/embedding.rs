@@ -183,6 +183,15 @@ impl EmbeddingModel {
         Ok(l2_normalize(&embedding))
     }
 
+    /// Generate an embedding from pre-computed pixel values (NCHW float tensor).
+    /// Used in the merged scan pipeline where decoding/preprocessing is done separately.
+    ///
+    /// Returns a 768-dimensional L2-normalized vector.
+    pub fn embed_preprocessed(&mut self, pixel_values: &[f32]) -> Result<Vec<f32>, String> {
+        let embedding = self.run_vision_inference(pixel_values)?;
+        Ok(l2_normalize(&embedding))
+    }
+
     /// Generate an embedding for a text query.
     ///
     /// Returns a 768-dimensional L2-normalized vector.
@@ -326,14 +335,7 @@ pub fn preprocess_image(path: &Path) -> Result<(Vec<f32>, PreprocessTiming), Str
         .map(|m| m.len())
         .unwrap_or(0);
 
-    // Load and decode image using format-specific decoders where available
-    let (rgb_data, width, height) = if ext == "jpg" || ext == "jpeg" || ext == "jfif" {
-        decode_jpeg_scaled(path)?
-    } else if ext == "png" {
-        decode_png(path)?
-    } else {
-        decode_other_format(path)?
-    };
+    let (rgb_data, width, height) = decode_image_to_rgb(path)?;
     let decode_time = start.elapsed();
 
     // Resize to IMAGE_SIZE x IMAGE_SIZE using fast_image_resize (SIMD-accelerated)
@@ -361,6 +363,69 @@ pub fn preprocess_image(path: &Path) -> Result<(Vec<f32>, PreprocessTiming), Str
     };
 
     Ok((pixel_values, timing))
+}
+
+/// Preprocess pre-decoded RGB image data into an embedding tensor.
+/// Same as preprocess_image but skips the decode step (uses provided RGB data).
+/// The decode_time in the returned timing will be zero.
+pub fn preprocess_image_from_rgb(
+    rgb_data: &[u8],
+    width: u32,
+    height: u32,
+    file: &str,
+    file_type: &str,
+    file_size_bytes: u64,
+) -> Result<(Vec<f32>, PreprocessTiming), String> {
+    use std::time::Instant;
+    let start = Instant::now();
+
+    // Resize to IMAGE_SIZE x IMAGE_SIZE using fast_image_resize (SIMD-accelerated)
+    let resized_rgb = fast_resize_rgb(rgb_data, width, height, IMAGE_SIZE, IMAGE_SIZE)?;
+    let resize_time = start.elapsed();
+
+    // Convert to NCHW float tensor with normalization
+    let tensor_start = Instant::now();
+    let pixel_values = rgb_to_nchw_normalized(&resized_rgb, IMAGE_SIZE, IMAGE_SIZE);
+    let tensor_time = tensor_start.elapsed();
+
+    let total = start.elapsed();
+
+    let timing = PreprocessTiming {
+        file: file.to_string(),
+        file_type: file_type.to_string(),
+        file_size_bytes,
+        source_width: width,
+        source_height: height,
+        decode: std::time::Duration::ZERO,
+        resize: resize_time,
+        tensor: tensor_time,
+        total,
+    };
+
+    Ok((pixel_values, timing))
+}
+
+/// Decode an image file to RGB pixel data.
+/// Uses the fastest available decoder for each format:
+/// - JPEG: turbojpeg with scaled decoding
+/// - PNG: direct png crate decoder
+/// - Other: image crate fallback
+///
+/// Returns (rgb_data, width, height).
+pub fn decode_image_to_rgb(path: &Path) -> Result<(Vec<u8>, u32, u32), String> {
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_lowercase())
+        .unwrap_or_default();
+
+    if ext == "jpg" || ext == "jpeg" || ext == "jfif" {
+        decode_jpeg_scaled(path)
+    } else if ext == "png" {
+        decode_png(path)
+    } else {
+        decode_other_format(path)
+    }
 }
 
 /// Decode a JPEG using turbojpeg with scaled decoding.
