@@ -73,6 +73,17 @@
   let lastScanDurationMs = $state<number | null>(null);
   let scanProgress = $state<ScanProgressPayload | null>(null);
   let scanOperation = $state<"adding" | "removing">("adding");
+
+  function startScan(operation: "adding" | "removing") {
+    scanOperation = operation;
+    isScanning = true;
+    scanProgress = { phase: operation === "removing" ? "scan" : "thumbnails", current: 0, total: 0 };
+  }
+
+  function endScan() {
+    scanProgress = null;
+    isScanning = false;
+  }
   let isPanelOpen = $state(false);
   let selectedIndex = $state<number | null>(null);
   let selectedImage = $state<ImageInfo | null>(null);
@@ -107,18 +118,23 @@
   // Track if any sort is active (for filtered search)
   let hasActiveFilters = $derived(sortField !== "relevance");
 
-  // Hide the search value during scanning/loading so placeholder can show progress
-  let displaySearchValue = $derived(
-    isScanning || modelLoading
-      ? ""
-      : (similarToImage ? `similar to: ${getFilename(similarToImage.path)}` : searchQuery)
-  );
-
   // Context menu state
   let contextMenu = $state<{ x: number; y: number; image: ImageInfo } | null>(null);
 
   // Similar search state - when set, we're showing results similar to this image
   let similarToImage = $state<ImageInfo | null>(null);
+
+  let searchBarPlaceholder = $derived(
+    modelLoading
+      ? "Loading model..."
+      : isScanning
+        ? `${scanOperation === "removing" ? "Removing" : "Adding"} ${scanProgress?.current ?? 0}/${scanProgress?.total ?? 0} images...`
+        : similarToImage
+          ? `similar to: ${getFilename(similarToImage.path)}`
+          : `Search ${indexedCount} images...`
+  );
+
+  let searchBarDisabled = $derived(isScanning || modelLoading);
 
   // Debounce timer
   let searchTimeout: ReturnType<typeof setTimeout> | null = null;
@@ -181,6 +197,9 @@
   }
 
   function handleSearchInput(e: Event) {
+    if (similarToImage) {
+      similarToImage = null;
+    }
     const value = (e.target as HTMLInputElement).value;
     searchQuery = value;
 
@@ -331,41 +350,30 @@
     });
 
     if (selected) {
-      scanOperation = "adding";
-      isScanning = true;
-      scanProgress = { phase: "thumbnails", current: 0, total: 0 };
+      startScan("adding");
       const start = performance.now();
       await invoke("add_watched_directory", { path: selected });
       lastScanDurationMs = performance.now() - start;
       console.log(`Scan completed in ${formatDuration(lastScanDurationMs)}`);
-      scanProgress = null;
-      isScanning = false;
-      scanOperation = "adding";
+      endScan();
       await loadInitialData();
     }
   }
 
   async function removeDirectory(path: string) {
-    scanOperation = "removing";
-    isScanning = true;
-    scanProgress = { phase: "scan", current: 0, total: 0 };
+    startScan("removing");
     await invoke("remove_watched_directory", { path });
-    scanProgress = null;
-    isScanning = false;
-    scanOperation = "adding";
+    endScan();
     await loadInitialData();
   }
 
   async function rescanAll() {
-    scanOperation = "adding";
-    isScanning = true;
-    scanProgress = { phase: "thumbnails", current: 0, total: 0 };
+    startScan("adding");
     const start = performance.now();
     await invoke("rescan_all");
     lastScanDurationMs = performance.now() - start;
     console.log(`Scan completed in ${formatDuration(lastScanDurationMs)}`);
-    scanProgress = null;
-    isScanning = false;
+    endScan();
     await loadInitialData();
   }
 
@@ -414,12 +422,6 @@
       alert("Failed to find similar images: " + String(e));
     }
     isLoading = false;
-  }
-
-  function clearSimilarSearch() {
-    similarToImage = null;
-    searchQuery = "";
-    search("");
   }
 
   function closeContextMenu() {
@@ -636,15 +638,10 @@
       <input
         type="text"
         class="search-input"
-        placeholder={modelLoading
-          ? "Loading model..."
-          : isScanning
-            ? `${scanOperation === "removing" ? "Removing" : "Adding"} ${scanProgress?.current ?? 0}/${scanProgress?.total ?? 0} images...`
-            : `Search ${indexedCount} images...`}
-        value={displaySearchValue}
+        placeholder={searchBarPlaceholder}
+        value={similarToImage ? "" : searchQuery}
         oninput={handleSearchInput}
-        onfocus={() => { if (similarToImage) clearSimilarSearch(); }}
-        disabled={isScanning || modelLoading}
+        disabled={searchBarDisabled}
       />
     </div>
 
