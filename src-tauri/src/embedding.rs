@@ -339,7 +339,7 @@ pub fn preprocess_image(path: &Path) -> Result<(Vec<f32>, PreprocessTiming), Str
 
     // Resize to IMAGE_SIZE x IMAGE_SIZE using fast_image_resize (SIMD-accelerated)
     let resize_start = Instant::now();
-    let resized_rgb = fast_resize_rgb(&rgb_data, width, height, IMAGE_SIZE, IMAGE_SIZE)?;
+    let resized_rgb = crate::thumbnail::fast_resize_rgb(&rgb_data, width, height, IMAGE_SIZE, IMAGE_SIZE, None)?;
     let resize_time = resize_start.elapsed();
 
     // Convert to NCHW float tensor with normalization
@@ -379,7 +379,7 @@ pub fn preprocess_image_from_rgb(
     let start = Instant::now();
 
     // Resize to IMAGE_SIZE x IMAGE_SIZE using fast_image_resize (SIMD-accelerated)
-    let resized_rgb = fast_resize_rgb(rgb_data, width, height, IMAGE_SIZE, IMAGE_SIZE)?;
+    let resized_rgb = crate::thumbnail::fast_resize_rgb(rgb_data, width, height, IMAGE_SIZE, IMAGE_SIZE, None)?;
     let resize_time = start.elapsed();
 
     // Convert to NCHW float tensor with normalization
@@ -570,17 +570,6 @@ fn decode_other_format(path: &Path) -> Result<(Vec<u8>, u32, u32), String> {
     let rgb_data = rgb.into_raw();
 
     Ok((rgb_data, width, height))
-}
-
-/// Resize RGB image data using fast_image_resize (SIMD-accelerated).
-fn fast_resize_rgb(
-    rgb_data: &[u8],
-    src_width: u32,
-    src_height: u32,
-    dst_width: u32,
-    dst_height: u32,
-) -> Result<Vec<u8>, String> {
-    crate::thumbnail::fast_resize_rgb(rgb_data, src_width, src_height, dst_width, dst_height, None)
 }
 
 /// Convert RGB u8 data to NCHW float tensor with normalization.
