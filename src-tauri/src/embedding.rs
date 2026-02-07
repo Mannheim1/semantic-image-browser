@@ -338,7 +338,7 @@ pub fn preprocess_image(path: &Path) -> Result<(Vec<f32>, PreprocessTiming), Str
 
     let filename = path.file_name().unwrap_or_default().to_string_lossy();
     let (pixel_values, mut timing) =
-        preprocess_image_from_rgb(&rgb_data, width, height, &filename, &ext, file_size_bytes)?;
+        preprocess_image_from_rgb(&rgb_data, width, height, &filename, &ext, file_size_bytes, None)?;
     timing.decode = decode_time;
     timing.total = timing.total + decode_time;
 
@@ -355,12 +355,13 @@ pub fn preprocess_image_from_rgb(
     file: &str,
     file_type: &str,
     file_size_bytes: u64,
+    resizer: Option<&mut fast_image_resize::Resizer>,
 ) -> Result<(Vec<f32>, PreprocessTiming), String> {
     use std::time::Instant;
     let start = Instant::now();
 
     // Resize to IMAGE_SIZE x IMAGE_SIZE using fast_image_resize (SIMD-accelerated)
-    let resized_rgb = crate::thumbnail::fast_resize_rgb(rgb_data, width, height, IMAGE_SIZE, IMAGE_SIZE, None)?;
+    let resized_rgb = crate::thumbnail::fast_resize_rgb(rgb_data, width, height, IMAGE_SIZE, IMAGE_SIZE, resizer)?;
     let resize_time = start.elapsed();
 
     // Convert to NCHW float tensor with normalization
