@@ -72,6 +72,7 @@
   let modelLoading = $state(true);
   let lastScanDurationMs = $state<number | null>(null);
   let scanProgress = $state<ScanProgressPayload | null>(null);
+  let scanOperation = $state<"adding" | "removing">("adding");
   let isPanelOpen = $state(false);
   let selectedIndex = $state<number | null>(null);
   let selectedImage = $state<ImageInfo | null>(null);
@@ -330,6 +331,7 @@
     });
 
     if (selected) {
+      scanOperation = "adding";
       isScanning = true;
       scanProgress = { phase: "thumbnails", current: 0, total: 0 };
       const start = performance.now();
@@ -338,16 +340,24 @@
       console.log(`Scan completed in ${formatDuration(lastScanDurationMs)}`);
       scanProgress = null;
       isScanning = false;
+      scanOperation = "adding";
       await loadInitialData();
     }
   }
 
   async function removeDirectory(path: string) {
+    scanOperation = "removing";
+    isScanning = true;
+    scanProgress = { phase: "scan", current: 0, total: 0 };
     await invoke("remove_watched_directory", { path });
+    scanProgress = null;
+    isScanning = false;
+    scanOperation = "adding";
     await loadInitialData();
   }
 
   async function rescanAll() {
+    scanOperation = "adding";
     isScanning = true;
     scanProgress = { phase: "thumbnails", current: 0, total: 0 };
     const start = performance.now();
@@ -628,10 +638,8 @@
         class="search-input"
         placeholder={modelLoading
           ? "Loading model..."
-          : isScanning && scanProgress && scanProgress.total > 0
-            ? (scanProgress.phase === "thumbnails"
-              ? `Creating ${scanProgress.current}/${scanProgress.total} thumbnails...`
-              : `Scanning ${scanProgress.current}/${scanProgress.total} images...`)
+          : isScanning
+            ? `${scanOperation === "removing" ? "Removing" : "Adding"} ${scanProgress?.current ?? 0}/${scanProgress?.total ?? 0} images...`
             : `Search ${indexedCount} images...`}
         value={displaySearchValue}
         oninput={handleSearchInput}
