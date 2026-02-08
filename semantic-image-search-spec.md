@@ -199,7 +199,7 @@ C:\Dev\onnxruntime-win-x64-1.23.2
 C:\Dev\onnxruntime-win-x64-gpu-1.23.2
 ```
 
-The path to `onnxruntime.dll` is configured in the app settings (`ort_dylib_path`).
+The ONNX Runtime library is selected from the downloaded runtime configured in app settings.
 
 ### SigLIP2 Models
 

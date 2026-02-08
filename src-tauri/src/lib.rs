@@ -245,15 +245,22 @@ fn inspect_siglip_config(path: String) -> Result<SiglipConfigInfo, String> {
 }
 
 #[tauri::command]
-fn test_embedding(ort_dylib_path: String, model_dir: String, image_path: String, query: String) -> Result<EmbeddingTestResult, String> {
+fn test_embedding(app: AppHandle, model_dir: String, image_path: String, query: String) -> Result<EmbeddingTestResult, String> {
     use embedding::EmbeddingModel;
 
-    let dylib_path = Path::new(&ort_dylib_path);
+    let cfg = config::load_config(&app)?;
+    let runtime_type = cfg.runtime_type
+        .as_deref()
+        .and_then(ort_download::RuntimeType::from_str)
+        .unwrap_or(ort_download::RuntimeType::Cpu);
+    let ort_path = ort_download::get_ort_library_path(&app, runtime_type)?
+        .ok_or_else(|| format!("{} runtime is not installed.", runtime_type.display_name()))?;
+
     let model_path = Path::new(&model_dir);
     let image_file = Path::new(&image_path);
 
-    // Initialize ONNX Runtime with the provided dylib
-    if let Err(e) = embedding::init_ort(dylib_path) {
+    // Initialize ONNX Runtime using the selected downloaded runtime library.
+    if let Err(e) = embedding::init_ort(&ort_path) {
         return Ok(EmbeddingTestResult {
             model_loaded: false,
             image_embedding_dim: None,
@@ -323,9 +330,8 @@ async fn get_config(app: AppHandle) -> Result<AppConfig, String> {
 }
 
 #[tauri::command]
-async fn set_model_config(app: AppHandle, ort_dylib_path: String, model_dir: String) -> Result<(), String> {
+async fn set_model_config(app: AppHandle, model_dir: String) -> Result<(), String> {
     let mut cfg = config::load_config(&app)?;
-    cfg.ort_dylib_path = Some(ort_dylib_path);
     cfg.model_dir = Some(model_dir);
     config::save_config(&app, &cfg)?;
     Ok(())
@@ -1324,33 +1330,19 @@ pub fn run() {
                     .and_then(ort_download::RuntimeType::from_str)
                     .unwrap_or(ort_download::RuntimeType::Cpu);
 
-                // Determine the ONNX Runtime library path:
-                // 1. If ort_dylib_path is set in config (dev override), use that
-                // 2. Otherwise, check if the selected runtime is downloaded
-                let ort_path: Option<PathBuf> = if let Some(override_path) = &cfg_for_task.ort_dylib_path {
-                    let p = PathBuf::from(override_path);
-                    if p.exists() {
-                        println!("Using ONNX Runtime from config override: {}", p.display());
+                // Determine the ONNX Runtime library path from downloaded runtime.
+                let ort_path: Option<PathBuf> = match ort_download::get_ort_library_path(&handle_for_task, runtime_type) {
+                    Ok(Some(p)) => {
+                        println!("Using {} runtime: {}", runtime_type.display_name(), p.display());
                         Some(p)
-                    } else {
-                        eprintln!("Warning: Configured ort_dylib_path does not exist: {}", override_path);
+                    }
+                    Ok(None) => {
+                        println!("{} runtime not installed. Use Model > Select Runtime to download it.", runtime_type.display_name());
                         None
                     }
-                } else {
-                    // Check for downloaded runtime
-                    match ort_download::get_ort_library_path(&handle_for_task, runtime_type) {
-                        Ok(Some(p)) => {
-                            println!("Using {} runtime: {}", runtime_type.display_name(), p.display());
-                            Some(p)
-                        }
-                        Ok(None) => {
-                            println!("{} runtime not installed. Use Model > Select Runtime to download it.", runtime_type.display_name());
-                            None
-                        }
-                        Err(e) => {
-                            eprintln!("Warning: Failed to check for ONNX Runtime: {}", e);
-                            None
-                        }
+                    Err(e) => {
+                        eprintln!("Warning: Failed to check for ONNX Runtime: {}", e);
+                        None
                     }
                 };
 
