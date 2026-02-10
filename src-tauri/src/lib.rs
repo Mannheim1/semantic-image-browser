@@ -14,6 +14,7 @@ mod benchmark;
 mod config;
 mod database;
 mod embedding;
+mod image_ops;
 mod ort_download;
 mod scanner;
 mod thumbnail;
@@ -21,7 +22,8 @@ mod thumbnail;
 use config::AppConfig;
 use database::{FilterOptions, ImageInfo, ImageRecord, SortOptions};
 use benchmark::PreprocessTiming;
-use embedding::{EmbeddingModel, GpuEmbeddingModel, GPU_BATCH_SIZE, PreprocessedBatch, preprocess_image_from_rgb, decode_image_to_rgb, IMAGE_SIZE};
+use embedding::{EmbeddingModel, GpuEmbeddingModel, GPU_BATCH_SIZE, PreprocessedBatch, preprocess_image_from_rgb, IMAGE_SIZE};
+use image_ops::decode_image_to_rgb;
 
 /// Maximum number of embedding model instances to keep in the pool.
 /// This limits RAM usage (~500MB per model) while enabling parallel processing.
