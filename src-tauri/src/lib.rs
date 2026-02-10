@@ -221,11 +221,15 @@ async fn remove_watched_directory(app: AppHandle, state: tauri::State<'_, AppSta
     let thumb_dir = thumbnails_dir(&app, &cfg)?;
 
     let removed_path = Path::new(&path);
+    let remaining_dirs: Vec<&Path> = cfg.watched_directories.iter().map(|d| Path::new(d.as_str())).collect();
     let table = state.table.lock().await;
     let all_paths = database::get_all_paths(&table).await?;
     let to_remove: Vec<String> = all_paths
         .into_iter()
-        .filter(|p| Path::new(p).starts_with(removed_path))
+        .filter(|p| {
+            let p = Path::new(p);
+            p.starts_with(removed_path) && !remaining_dirs.iter().any(|dir| p.starts_with(dir))
+        })
         .collect();
 
     if !to_remove.is_empty() {
