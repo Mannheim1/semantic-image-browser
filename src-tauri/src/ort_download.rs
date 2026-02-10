@@ -239,15 +239,6 @@ pub fn is_runtime_installed(app: &AppHandle, runtime_type: RuntimeType) -> Resul
     Ok(get_ort_library_path(app, runtime_type)?.is_some())
 }
 
-/// Get the path to the currently configured runtime's library, if it exists.
-pub fn get_active_ort_library_path(app: &AppHandle) -> Result<Option<PathBuf>, String> {
-    let cfg = crate::config::load_config(app)?;
-    let runtime_type = cfg.runtime_type
-        .as_deref()
-        .and_then(RuntimeType::from_str)
-        .unwrap_or(RuntimeType::Cpu);
-    get_ort_library_path(app, runtime_type)
-}
 
 /// Get the expected download size in bytes for display purposes.
 pub fn get_download_size(runtime_type: RuntimeType) -> Option<u64> {
@@ -614,12 +605,9 @@ pub struct OrtStatus {
 }
 
 /// Get the current ONNX Runtime status.
-pub fn get_ort_status(app: &AppHandle) -> Result<OrtStatus, String> {
+pub fn get_ort_status(app: &AppHandle, selected_runtime: Option<String>) -> Result<OrtStatus, String> {
     let platform = Platform::detect().ok_or("Unsupported platform")?;
 
-    // Get runtime type from config
-    let cfg = crate::config::load_config(app)?;
-    let selected_runtime = cfg.runtime_type.clone();
     let selected_type = selected_runtime
         .as_deref()
         .and_then(RuntimeType::from_str)

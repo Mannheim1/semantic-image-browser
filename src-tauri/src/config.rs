@@ -3,6 +3,8 @@ use std::fs;
 use std::path::PathBuf;
 use tauri::{AppHandle, Manager};
 
+use crate::state::AppState;
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AppConfig {
     pub watched_directories: Vec<String>,
@@ -29,11 +31,23 @@ pub fn load_config(app: &AppHandle) -> Result<AppConfig, String> {
     serde_json::from_str(&content).map_err(|e| e.to_string())
 }
 
-pub fn save_config(app: &AppHandle, config: &AppConfig) -> Result<(), String> {
+fn save_config(app: &AppHandle, config: &AppConfig) -> Result<(), String> {
     let path = config_path(app)?;
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
     let content = serde_json::to_string_pretty(config).map_err(|e| e.to_string())?;
     fs::write(&path, content).map_err(|e| e.to_string())
+}
+
+/// Read config from the in-memory cache.
+pub fn get_config(state: &AppState) -> AppConfig {
+    state.config.read().unwrap().clone()
+}
+
+/// Apply a mutation to the cached config and write through to disk.
+pub fn update_config(app: &AppHandle, state: &AppState, f: impl FnOnce(&mut AppConfig)) -> Result<(), String> {
+    let mut cfg = state.config.write().map_err(|e| e.to_string())?;
+    f(&mut cfg);
+    save_config(app, &cfg)
 }

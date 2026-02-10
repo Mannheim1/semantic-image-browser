@@ -29,7 +29,6 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tauri::{AppHandle, Manager};
 
-use crate::config::AppConfig;
 
 pub const TABLE_NAME: &str = "images";
 pub const VISUAL_EMBEDDING_DIM: i32 = 768; // SigLIP2-base pooler_output dimension
@@ -83,7 +82,7 @@ pub struct ImageRecord {
     pub model_id: Option<String>,
 }
 
-pub fn db_path(app: &AppHandle, _config: &AppConfig) -> Result<PathBuf, String> {
+pub fn db_path(app: &AppHandle) -> Result<PathBuf, String> {
     let app_data = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
     Ok(app_data.join("lancedb"))
 }
@@ -135,8 +134,8 @@ pub fn create_schema() -> Arc<Schema> {
     Arc::new(Schema::new(fields))
 }
 
-pub async fn open_connection(app: &AppHandle, config: &AppConfig) -> Result<Connection, String> {
-    let path = db_path(app, config)?;
+pub async fn open_connection(app: &AppHandle) -> Result<Connection, String> {
+    let path = db_path(app)?;
     connect(path.to_string_lossy().as_ref())
         .execute()
         .await
