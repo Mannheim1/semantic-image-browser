@@ -1,7 +1,9 @@
-use fast_image_resize::{images::Image as FirImage, ResizeAlg, ResizeOptions, Resizer, PixelType};
+use fast_image_resize::Resizer;
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::{Path, PathBuf};
+
+use crate::image_ops::{decode_image_to_rgb, fast_resize_rgb};
 
 const THUMBNAIL_SIZE: u32 = 256;
 const WEBP_QUALITY: f32 = 80.0;
@@ -45,7 +47,7 @@ pub fn thumbnail_is_current(thumb_path: &Path, source_path: &Path) -> bool {
 /// Generates a thumbnail for the given source image by decoding it from disk.
 /// Optionally accepts a reusable Resizer to avoid per-image allocation in batch processing.
 pub fn generate_thumbnail(source_path: &Path, thumb_path: &Path, resizer: Option<&mut Resizer>) -> Result<(), String> {
-    let (rgb_data, width, height) = crate::embedding::decode_image_to_rgb(source_path)?;
+    let (rgb_data, width, height) = decode_image_to_rgb(source_path)?;
     generate_thumbnail_from_rgb(&rgb_data, width, height, thumb_path, resizer)
 }
 
@@ -87,56 +89,6 @@ fn calculate_thumbnail_dimensions(width: u32, height: u32, max_size: u32) -> (u3
     } else {
         ((max_size as f32 * aspect).round() as u32, max_size)
     }
-}
-
-/// Resize RGB image data using fast_image_resize (SIMD-accelerated, bilinear).
-/// Optionally accepts a reusable Resizer to avoid per-image allocation in batch processing.
-pub fn fast_resize_rgb(
-    rgb_data: &[u8],
-    src_width: u32,
-    src_height: u32,
-    dst_width: u32,
-    dst_height: u32,
-    resizer: Option<&mut Resizer>,
-) -> Result<Vec<u8>, String> {
-    if src_width == 0 || src_height == 0 || dst_width == 0 || dst_height == 0 {
-        return Err("Invalid image dimensions".to_string());
-    }
-
-    // If no resize needed, return original
-    if src_width == dst_width && src_height == dst_height {
-        return Ok(rgb_data.to_vec());
-    }
-
-    let mut rgb_copy = rgb_data.to_vec();
-    let src_image = FirImage::from_slice_u8(
-        src_width,
-        src_height,
-        &mut rgb_copy,
-        PixelType::U8x3,
-    )
-    .map_err(|e| format!("Failed to create source image: {}", e))?;
-
-    let mut dst_image = FirImage::new(dst_width, dst_height, PixelType::U8x3);
-
-    let options = ResizeOptions::new().resize_alg(ResizeAlg::Convolution(
-        fast_image_resize::FilterType::Bilinear,
-    ));
-
-    let mut fallback_resizer;
-    let resizer = match resizer {
-        Some(r) => r,
-        None => {
-            fallback_resizer = Resizer::new();
-            &mut fallback_resizer
-        }
-    };
-
-    resizer
-        .resize(&src_image, &mut dst_image, Some(&options))
-        .map_err(|e| format!("Failed to resize image: {}", e))?;
-
-    Ok(dst_image.into_vec())
 }
 
 /// Gets the thumbnail file path for a source image, generating the thumbnail if needed.
