@@ -307,6 +307,7 @@ pub async fn scan_directory_internal(
                                 };
 
                                 // Generate thumbnail from decoded RGB data
+                                let thumb_start = std::time::Instant::now();
                                 let thumb_path = thumbnail::thumbnail_path(thumb_dir_ref, source_path);
                                 if !thumbnail::thumbnail_is_current(&thumb_path, source_path) {
                                     if let Err(e) = thumbnail::generate_thumbnail_from_rgb(
@@ -317,6 +318,7 @@ pub async fn scan_directory_internal(
                                         ));
                                     }
                                 }
+                                let thumb_time = thumb_start.elapsed();
 
                                 // Preprocess for embedding from same decoded RGB data
                                 let filename = source_path.file_name()
@@ -327,7 +329,7 @@ pub async fn scan_directory_internal(
                                 ) {
                                     Ok((pixel_values, mut timing)) => {
                                         timing.decode = decode_time;
-                                        timing.total = timing.total + decode_time;
+                                        timing.thumbnail = thumb_time;
 
                                         let inference_start = std::time::Instant::now();
                                         match model.embed_preprocessed(&pixel_values) {
@@ -403,6 +405,7 @@ pub async fn scan_directory_internal(
                         let result = match decode_result {
                             Ok((rgb_data, width, height)) => {
                                 // Generate thumbnail from decoded RGB data
+                                let thumb_start = std::time::Instant::now();
                                 let thumb_path = thumbnail::thumbnail_path(&thumb_dir_owned, source_path);
                                 if !thumbnail::thumbnail_is_current(&thumb_path, source_path) {
                                     // Thumbnail errors are non-fatal for the embedding pipeline
@@ -410,6 +413,7 @@ pub async fn scan_directory_internal(
                                         &rgb_data, width, height, &thumb_path, None,
                                     );
                                 }
+                                let thumb_time = thumb_start.elapsed();
 
                                 // Preprocess for embedding
                                 let filename = source_path.file_name()
@@ -419,7 +423,7 @@ pub async fn scan_directory_internal(
                                 ) {
                                     Ok((pixel_values, mut timing)) => {
                                         timing.decode = decode_time;
-                                        timing.total = timing.total + decode_time;
+                                        timing.thumbnail = thumb_time;
                                         Ok((pixel_values, timing))
                                     }
                                     Err(e) => Err(e),

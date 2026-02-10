@@ -341,7 +341,6 @@ pub fn preprocess_image(path: &Path) -> Result<(Vec<f32>, PreprocessTiming), Str
     let (pixel_values, mut timing) =
         preprocess_image_from_rgb(&rgb_data, width, height, &filename, &ext, file_size_bytes, None)?;
     timing.decode = decode_time;
-    timing.total = timing.total + decode_time;
 
     Ok((pixel_values, timing))
 }
@@ -370,8 +369,6 @@ pub fn preprocess_image_from_rgb(
     let pixel_values = rgb_to_nchw_normalized(&resized_rgb, IMAGE_SIZE, IMAGE_SIZE);
     let tensor_time = tensor_start.elapsed();
 
-    let total = start.elapsed();
-
     let timing = PreprocessTiming {
         file: file.to_string(),
         file_type: file_type.to_string(),
@@ -379,9 +376,9 @@ pub fn preprocess_image_from_rgb(
         source_width: width,
         source_height: height,
         decode: std::time::Duration::ZERO,
+        thumbnail: std::time::Duration::ZERO,
         resize: resize_time,
         tensor: tensor_time,
-        total,
     };
 
     Ok((pixel_values, timing))
