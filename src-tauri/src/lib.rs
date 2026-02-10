@@ -25,11 +25,6 @@ use embedding::{GpuEmbeddingModel, GPU_BATCH_SIZE};
 use scan::{ScanProgressState, ScanResult, scan_directory_internal};
 use state::{AppState, EmbeddingBackend, EmbeddingPool, MAX_EMBEDDING_WORKERS};
 
-fn thumbnails_dir(app: &AppHandle, _config: &AppConfig) -> Result<PathBuf, String> {
-    let app_data = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
-    Ok(app_data.join("thumbnails"))
-}
-
 /// Validates that a path exists and is a directory.
 fn validate_directory(path: &str) -> Result<(), String> {
     let p = Path::new(path);
@@ -87,10 +82,10 @@ fn inspect_siglip_config(path: String) -> Result<SiglipConfigInfo, String> {
 }
 
 #[tauri::command]
-fn test_embedding(app: AppHandle, model_dir: String, image_path: String, query: String) -> Result<EmbeddingTestResult, String> {
+fn test_embedding(app: AppHandle, state: tauri::State<'_, AppState>, model_dir: String, image_path: String, query: String) -> Result<EmbeddingTestResult, String> {
     use embedding::EmbeddingModel;
 
-    let cfg = config::load_config(&app)?;
+    let cfg = config::get_config(&state);
     let runtime_type = cfg.runtime_type
         .as_deref()
         .and_then(ort_download::RuntimeType::from_str)
@@ -167,16 +162,15 @@ fn test_embedding(app: AppHandle, model_dir: String, image_path: String, query: 
 }
 
 #[tauri::command]
-async fn get_config(app: AppHandle) -> Result<AppConfig, String> {
-    config::load_config(&app)
+async fn get_config(state: tauri::State<'_, AppState>) -> Result<AppConfig, String> {
+    Ok(config::get_config(&state))
 }
 
 #[tauri::command]
-async fn set_model_config(app: AppHandle, model_dir: String) -> Result<(), String> {
-    let mut cfg = config::load_config(&app)?;
-    cfg.model_dir = Some(model_dir);
-    config::save_config(&app, &cfg)?;
-    Ok(())
+async fn set_model_config(app: AppHandle, state: tauri::State<'_, AppState>, model_dir: String) -> Result<(), String> {
+    config::update_config(&app, &state, |cfg| {
+        cfg.model_dir = Some(model_dir);
+    })
 }
 
 #[tauri::command]
@@ -187,14 +181,14 @@ fn get_embedding_model_status(state: tauri::State<'_, AppState>) -> bool {
 #[tauri::command]
 async fn add_watched_directory(app: AppHandle, state: tauri::State<'_, AppState>, path: String) -> Result<ScanResult, String> {
     validate_directory(&path)?;
-    let mut cfg = config::load_config(&app)?;
 
-    if !cfg.watched_directories.contains(&path) {
-        cfg.watched_directories.push(path.clone());
-        config::save_config(&app, &cfg)?;
+    if !config::get_config(&state).watched_directories.contains(&path) {
+        config::update_config(&app, &state, |cfg| {
+            cfg.watched_directories.push(path.clone());
+        })?;
     }
 
-    let thumb_dir = thumbnails_dir(&app, &cfg)?;
+    let thumb_dir = &state.thumbnails_dir;
     let table = state.table.lock().await;
 
     let progress = ScanProgressState::new(&app);
@@ -203,7 +197,7 @@ async fn add_watched_directory(app: AppHandle, state: tauri::State<'_, AppState>
     let model_id = state.model_id.read().map_err(|e| e.to_string())?.clone();
     let (result, _) = scan_directory_internal(
         &table,
-        &thumb_dir,
+        thumb_dir,
         &path,
         embedding_backend.as_deref(),
         model_id.as_deref(),
@@ -214,14 +208,15 @@ async fn add_watched_directory(app: AppHandle, state: tauri::State<'_, AppState>
 
 #[tauri::command]
 async fn remove_watched_directory(app: AppHandle, state: tauri::State<'_, AppState>, path: String) -> Result<(), String> {
-    let mut cfg = config::load_config(&app)?;
-    cfg.watched_directories.retain(|p| p != &path);
-    config::save_config(&app, &cfg)?;
+    config::update_config(&app, &state, |cfg| {
+        cfg.watched_directories.retain(|p| p != &path);
+    })?;
 
-    let thumb_dir = thumbnails_dir(&app, &cfg)?;
+    let thumb_dir = &state.thumbnails_dir;
 
     let removed_path = Path::new(&path);
-    let remaining_dirs: Vec<&Path> = cfg.watched_directories.iter().map(|d| Path::new(d.as_str())).collect();
+    let remaining_dirs: Vec<String> = config::get_config(&state).watched_directories;
+    let remaining_dirs: Vec<&Path> = remaining_dirs.iter().map(|d| Path::new(d.as_str())).collect();
     let table = state.table.lock().await;
     let all_paths = database::get_all_paths(&table).await?;
     let to_remove: Vec<String> = all_paths
@@ -237,7 +232,7 @@ async fn remove_watched_directory(app: AppHandle, state: tauri::State<'_, AppSta
         progress.set_phase("removing");
         progress.set_total(to_remove.len());
         for chunk in to_remove.chunks(500) {
-            thumbnail::delete_thumbnails(&thumb_dir, chunk)?;
+            thumbnail::delete_thumbnails(thumb_dir, chunk)?;
             database::remove_images(&table, chunk).await?;
             progress.increment_by(chunk.len());
         }
@@ -248,8 +243,8 @@ async fn remove_watched_directory(app: AppHandle, state: tauri::State<'_, AppSta
 
 #[tauri::command]
 async fn rescan_all(app: AppHandle, state: tauri::State<'_, AppState>) -> Result<ScanResult, String> {
-    let cfg = config::load_config(&app)?;
-    let thumb_dir = thumbnails_dir(&app, &cfg)?;
+    let cfg = config::get_config(&state);
+    let thumb_dir = &state.thumbnails_dir;
     let progress = ScanProgressState::new(&app);
 
     let mut total_result = ScanResult {
@@ -269,7 +264,7 @@ async fn rescan_all(app: AppHandle, state: tauri::State<'_, AppState>) -> Result
     for dir in &cfg.watched_directories {
         match scan_directory_internal(
             &table,
-            &thumb_dir,
+            thumb_dir,
             dir,
             embedding_backend.as_deref(),
             model_id.as_deref(),
@@ -296,7 +291,7 @@ async fn rescan_all(app: AppHandle, state: tauri::State<'_, AppState>) -> Result
 
     if !to_remove.is_empty() {
         total_result.images_removed = to_remove.len() as u32;
-        thumbnail::delete_thumbnails(&thumb_dir, &to_remove)?;
+        thumbnail::delete_thumbnails(thumb_dir, &to_remove)?;
         database::remove_images(&table, &to_remove).await?;
     }
 
@@ -304,9 +299,8 @@ async fn rescan_all(app: AppHandle, state: tauri::State<'_, AppState>) -> Result
 }
 
 #[tauri::command]
-async fn get_thumbnail_path(app: AppHandle, image_path: String) -> Result<String, String> {
-    let cfg = config::load_config(&app)?;
-    let thumb_dir = thumbnails_dir(&app, &cfg)?;
+async fn get_thumbnail_path(state: tauri::State<'_, AppState>, image_path: String) -> Result<String, String> {
+    let thumb_dir = state.thumbnails_dir.clone();
 
     tokio::task::spawn_blocking(move || {
         let source = Path::new(&image_path);
@@ -317,9 +311,8 @@ async fn get_thumbnail_path(app: AppHandle, image_path: String) -> Result<String
 }
 
 #[tauri::command]
-async fn get_watched_directories(app: AppHandle) -> Result<Vec<String>, String> {
-    let cfg = config::load_config(&app)?;
-    Ok(cfg.watched_directories)
+async fn get_watched_directories(state: tauri::State<'_, AppState>) -> Result<Vec<String>, String> {
+    Ok(config::get_config(&state).watched_directories)
 }
 
 #[tauri::command]
@@ -467,12 +460,11 @@ async fn show_in_folder(app: AppHandle, path: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn delete_all_thumbnails(app: AppHandle) -> Result<(), String> {
-    let cfg = config::load_config(&app)?;
-    let thumb_dir = thumbnails_dir(&app, &cfg)?;
+async fn delete_all_thumbnails(state: tauri::State<'_, AppState>) -> Result<(), String> {
+    let thumb_dir = &state.thumbnails_dir;
 
     if thumb_dir.exists() {
-        std::fs::remove_dir_all(&thumb_dir).map_err(|e| e.to_string())?;
+        std::fs::remove_dir_all(thumb_dir).map_err(|e| e.to_string())?;
     }
 
     Ok(())
@@ -480,8 +472,7 @@ async fn delete_all_thumbnails(app: AppHandle) -> Result<(), String> {
 
 #[tauri::command]
 async fn clear_database(app: AppHandle, state: tauri::State<'_, AppState>) -> Result<(), String> {
-    let cfg = config::load_config(&app)?;
-    let db_path = database::db_path(&app, &cfg)?;
+    let db_path = database::db_path(&app)?;
 
     let mut table = state.table.lock().await;
 
@@ -521,8 +512,9 @@ pub struct OrtDownloadProgress {
 
 /// Get the current ONNX Runtime installation status.
 #[tauri::command]
-fn get_ort_status(app: AppHandle) -> Result<ort_download::OrtStatus, String> {
-    ort_download::get_ort_status(&app)
+fn get_ort_status(app: AppHandle, state: tauri::State<'_, AppState>) -> Result<ort_download::OrtStatus, String> {
+    let runtime_type = config::get_config(&state).runtime_type;
+    ort_download::get_ort_status(&app, runtime_type)
 }
 
 /// Get the download size for a runtime type.
@@ -535,7 +527,7 @@ fn get_ort_download_size(runtime_type: String) -> Result<Option<u64>, String> {
 
 /// Download and install ONNX Runtime.
 #[tauri::command]
-async fn download_ort(app: AppHandle, runtime_type: String) -> Result<String, String> {
+async fn download_ort(app: AppHandle, state: tauri::State<'_, AppState>, runtime_type: String) -> Result<String, String> {
     let rt = ort_download::RuntimeType::from_str(&runtime_type)
         .ok_or_else(|| format!("Invalid runtime type: {}", runtime_type))?;
 
@@ -548,16 +540,16 @@ async fn download_ort(app: AppHandle, runtime_type: String) -> Result<String, St
     let lib_path = ort_download::download_ort(&app, rt, progress_callback).await?;
 
     // Save the runtime type to config after successful download
-    let mut cfg = config::load_config(&app)?;
-    cfg.runtime_type = Some(runtime_type.clone());
-    config::save_config(&app, &cfg)?;
+    config::update_config(&app, &state, |cfg| {
+        cfg.runtime_type = Some(runtime_type.clone());
+    })?;
 
     Ok(lib_path.to_string_lossy().to_string())
 }
 
 /// Set the runtime type in config (for selecting an already-installed runtime).
 #[tauri::command]
-async fn set_runtime_type(app: AppHandle, runtime_type: String) -> Result<(), String> {
+async fn set_runtime_type(app: AppHandle, state: tauri::State<'_, AppState>, runtime_type: String) -> Result<(), String> {
     let rt = ort_download::RuntimeType::from_str(&runtime_type)
         .ok_or_else(|| format!("Invalid runtime type: {}", runtime_type))?;
 
@@ -566,11 +558,9 @@ async fn set_runtime_type(app: AppHandle, runtime_type: String) -> Result<(), St
         return Err(format!("Runtime '{}' is not installed", runtime_type));
     }
 
-    let mut cfg = config::load_config(&app)?;
-    cfg.runtime_type = Some(runtime_type);
-    config::save_config(&app, &cfg)?;
-
-    Ok(())
+    config::update_config(&app, &state, |cfg| {
+        cfg.runtime_type = Some(runtime_type);
+    })
 }
 
 /// Check if CUDA runtime is available for this platform.
@@ -583,17 +573,17 @@ fn is_cuda_available() -> bool {
 
 /// Uninstall a runtime.
 #[tauri::command]
-async fn uninstall_runtime(app: AppHandle, runtime_type: String) -> Result<(), String> {
+async fn uninstall_runtime(app: AppHandle, state: tauri::State<'_, AppState>, runtime_type: String) -> Result<(), String> {
     let rt = ort_download::RuntimeType::from_str(&runtime_type)
         .ok_or_else(|| format!("Invalid runtime type: {}", runtime_type))?;
 
     ort_download::uninstall_runtime(&app, rt)?;
 
     // If this was the selected runtime, clear the selection
-    let mut cfg = config::load_config(&app)?;
-    if cfg.runtime_type.as_deref() == Some(runtime_type.as_str()) {
-        cfg.runtime_type = None;
-        config::save_config(&app, &cfg)?;
+    if config::get_config(&state).runtime_type.as_deref() == Some(runtime_type.as_str()) {
+        config::update_config(&app, &state, |cfg| {
+            cfg.runtime_type = None;
+        })?;
     }
 
     Ok(())
@@ -629,10 +619,13 @@ pub fn run() {
             std::fs::create_dir_all(&app_data).ok();
             benchmark::init(&app_data);
 
+            // Compute thumbnails directory once (never changes)
+            let thumbnails_dir = app_data.join("thumbnails");
+
             // Phase 1: Quick initialization (database only) - blocks briefly
             // This is fast and required for the app to function at all
             let (db, table) = tauri::async_runtime::block_on(async {
-                let db = database::open_connection(&handle, &cfg).await?;
+                let db = database::open_connection(&handle).await?;
                 let table = database::get_or_create_table(&db).await?;
                 Ok::<(Connection, Table), String>((db, table))
             })
@@ -644,6 +637,8 @@ pub fn run() {
                 table: tokio::sync::Mutex::new(table),
                 embedding_backend: RwLock::new(None), // Will be Some(Arc<EmbeddingBackend>) after async init
                 model_id: RwLock::new(None),
+                config: RwLock::new(cfg.clone()),
+                thumbnails_dir,
             });
 
             // TODO: Automatically trigger a full rescan of watched directories on app launch.

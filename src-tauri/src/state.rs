@@ -4,11 +4,12 @@
 //! and the main AppState managed by Tauri.
 
 use lancedb::{Connection, Table};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::RwLock;
 
+use crate::config::AppConfig;
 use crate::embedding::{EmbeddingModel, GpuEmbeddingModel};
 
 /// Maximum number of embedding model instances to keep in the pool.
@@ -52,6 +53,10 @@ pub struct AppState {
     /// Model identifier (e.g., "siglip2-base-patch16-256") for database storage.
     /// Wrapped in RwLock to allow async initialization after app starts.
     pub model_id: RwLock<Option<String>>,
+    /// Cached config — avoids reading config.json from disk on every command.
+    pub config: RwLock<AppConfig>,
+    /// Thumbnails directory path, computed once at startup.
+    pub thumbnails_dir: PathBuf,
 }
 
 /// A pool of embedding models for parallel inference.
