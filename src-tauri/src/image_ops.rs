@@ -175,7 +175,8 @@ fn decode_other_format(path: &Path) -> Result<(Vec<u8>, u32, u32), String> {
     Ok((rgb_data, width, height))
 }
 
-/// Resize RGB image data using fast_image_resize (SIMD-accelerated, bilinear).
+/// Resize RGB image data using fast_image_resize (SIMD-accelerated).
+/// Uses box filter for large downscales (>4:1 ratio) and bilinear for smaller resizes.
 /// Optionally accepts a reusable Resizer to avoid per-image allocation in batch processing.
 pub fn fast_resize_rgb(
     rgb_data: &[u8],
@@ -205,9 +206,16 @@ pub fn fast_resize_rgb(
 
     let mut dst_image = FirImage::new(dst_width, dst_height, PixelType::U8x3);
 
-    let options = ResizeOptions::new().resize_alg(ResizeAlg::Convolution(
-        fast_image_resize::FilterType::Bilinear,
-    ));
+    // Use box filter for large downscales (>4:1), bilinear for smaller resizes.
+    // At extreme ratios bilinear samples a tiny neighborhood and misses most source pixels,
+    // while box (area averaging) considers every pixel and is faster.
+    let ratio = (src_width / dst_width).max(src_height / dst_height);
+    let filter = if ratio > 4 {
+        fast_image_resize::FilterType::Box
+    } else {
+        fast_image_resize::FilterType::Bilinear
+    };
+    let options = ResizeOptions::new().resize_alg(ResizeAlg::Convolution(filter));
 
     let mut fallback_resizer;
     let resizer = match resizer {
