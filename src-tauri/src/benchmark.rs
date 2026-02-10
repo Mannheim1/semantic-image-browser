@@ -10,12 +10,16 @@
 //! - file_size_bytes: raw file size on disk
 //! - source_width: decoded image width in pixels
 //! - source_height: decoded image height in pixels
-//! - decode_ms: time to read + decode the image
-//! - resize_ms: time to resize to target dimensions
-//! - tensor_ms: time to convert to NCHW float tensor
-//! - preprocess_ms: total preprocess time (decode + resize + tensor)
-//! - inference_ms: model inference time (per-image share for GPU batches)
 //! - phase: "cpu" or "gpu_batch"
+//! - decode_ms: time to read + decode the image
+//! - decode_ms_per_kb: decode time normalized by file size
+//! - decode_ms_per_kpx: decode time normalized by pixel count
+//! - thumbnail_ms: time to resize + encode + write thumbnail
+//! - thumbnail_ms_per_kpx: thumbnail time normalized by pixel count
+//! - resize_ms: time to resize to embedding target dimensions
+//! - resize_ms_per_kpx: resize time normalized by pixel count
+//! - tensor_ms: time to convert to NCHW float tensor
+//! - inference_ms: model inference time (per-image share for GPU batches)
 
 use std::fs::{File, OpenOptions};
 use std::io::Write;
@@ -26,7 +30,7 @@ use std::time::Duration;
 /// Global benchmark log, initialized once per app lifetime.
 static BENCH_LOG: std::sync::OnceLock<Mutex<BenchLog>> = std::sync::OnceLock::new();
 
-const CSV_HEADER: &str = "timestamp,file,file_type,file_size_bytes,source_width,source_height,decode_ms,resize_ms,tensor_ms,preprocess_ms,inference_ms,phase";
+const CSV_HEADER: &str = "timestamp,file,file_type,file_size_bytes,source_width,source_height,phase,decode_ms,decode_ms_per_kb,decode_ms_per_kpx,thumbnail_ms,thumbnail_ms_per_kpx,resize_ms,resize_ms_per_kpx,tensor_ms,inference_ms";
 
 struct BenchLog {
     path: PathBuf,
@@ -37,12 +41,9 @@ struct BenchLog {
 pub fn init(dir: &Path) {
     let csv_path = dir.join("benchmark.csv");
 
-    // Write header if file doesn't exist yet
-    let needs_header = !csv_path.exists();
-    if needs_header {
-        if let Ok(mut f) = File::create(&csv_path) {
-            let _ = writeln!(f, "{}", CSV_HEADER);
-        }
+    // Overwrite on each app launch — begin_scan_session writes headers per scan
+    if let Ok(mut f) = File::create(&csv_path) {
+        let _ = writeln!(f, "{}", CSV_HEADER);
     }
 
     let _ = BENCH_LOG.set(Mutex::new(BenchLog { path: csv_path }));
@@ -121,9 +122,9 @@ pub struct PreprocessTiming {
     pub source_width: u32,
     pub source_height: u32,
     pub decode: Duration,
+    pub thumbnail: Duration,
     pub resize: Duration,
     pub tensor: Duration,
-    pub total: Duration,
 }
 
 /// Log a preprocessing + inference result for a single image.
@@ -133,21 +134,32 @@ pub fn log_image(timing: &PreprocessTiming, inference: Duration, phase: &str) {
 
     let Ok(mut f) = OpenOptions::new().append(true).open(&log.path) else { return };
 
+    let kb = timing.file_size_bytes as f64 / 1024.0;
+    let kpx = (timing.source_width as f64 * timing.source_height as f64) / 1000.0;
+
+    let decode = ms(timing.decode);
+    let thumbnail = ms(timing.thumbnail);
+    let resize = ms(timing.resize);
+
     let _ = writeln!(
         f,
-        "{},{},{},{},{},{},{:.2},{:.2},{:.2},{:.2},{:.2},{}",
+        "{},{},{},{},{},{},{},{:.2},{:.2},{:.2},{:.2},{:.2},{:.2},{:.2},{:.2},{:.2}",
         now_iso(),
         escape_csv(&timing.file),
         timing.file_type,
         timing.file_size_bytes,
         timing.source_width,
         timing.source_height,
-        ms(timing.decode),
-        ms(timing.resize),
-        ms(timing.tensor),
-        ms(timing.total),
-        ms(inference),
         phase,
+        decode,
+        decode / kb,
+        decode / kpx,
+        thumbnail,
+        thumbnail / kpx,
+        resize,
+        resize / kpx,
+        ms(timing.tensor),
+        ms(inference),
     );
 }
 
