@@ -25,10 +25,19 @@ use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 /// Global benchmark log, initialized once per app lifetime.
 static BENCH_LOG: std::sync::OnceLock<Mutex<BenchLog>> = std::sync::OnceLock::new();
+
+/// Runtime toggle — when false, `log_image` and `begin_scan_session` are no-ops.
+static ENABLED: AtomicBool = AtomicBool::new(true);
+
+pub fn set_enabled(enabled: bool) {
+    ENABLED.store(enabled, Ordering::Relaxed);
+}
+
 
 const CSV_HEADER: &str = "timestamp,file,file_type,file_size_bytes,source_width,source_height,phase,decode_ms,decode_ms_per_kb,decode_ms_per_kpx,thumbnail_ms,thumbnail_ms_per_kpx,resize_ms,resize_ms_per_kpx,tensor_ms,inference_ms";
 
@@ -52,6 +61,7 @@ pub fn init(dir: &Path) {
 /// Start a new scan session — writes a separator and fresh header row
 /// so consecutive scans are visually distinct in the CSV.
 pub fn begin_scan_session() {
+    if !ENABLED.load(Ordering::Relaxed) { return; }
     let Some(log) = BENCH_LOG.get() else { return };
     let Ok(log) = log.lock() else { return };
 
@@ -129,6 +139,7 @@ pub struct PreprocessTiming {
 
 /// Log a preprocessing + inference result for a single image.
 pub fn log_image(timing: &PreprocessTiming, inference: Duration, phase: &str) {
+    if !ENABLED.load(Ordering::Relaxed) { return; }
     let Some(log) = BENCH_LOG.get() else { return };
     let Ok(log) = log.lock() else { return };
 

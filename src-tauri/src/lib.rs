@@ -595,6 +595,17 @@ fn check_cuda_dependencies() -> ort_download::CudaDependencyStatus {
     ort_download::check_cuda_dependencies()
 }
 
+/// Toggle benchmark CSV logging on or off, persisting the choice to config.
+#[tauri::command]
+fn toggle_benchmarking(app: AppHandle, state: tauri::State<'_, AppState>) -> Result<bool, String> {
+    let new_value = !config::get_config(&state).benchmarking;
+    config::update_config(&app, &state, |cfg| {
+        cfg.benchmarking = new_value;
+    })?;
+    benchmark::set_enabled(new_value);
+    Ok(new_value)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -618,6 +629,7 @@ pub fn run() {
             let app_data = handle.path().app_local_data_dir().expect("Failed to get app data dir");
             std::fs::create_dir_all(&app_data).ok();
             benchmark::init(&app_data);
+            benchmark::set_enabled(cfg.benchmarking);
 
             // Compute thumbnails directory once (never changes)
             let thumbnails_dir = app_data.join("thumbnails");
@@ -771,7 +783,8 @@ pub fn run() {
             check_cuda_dependencies,
             is_cuda_available,
             clear_database,
-            open_app_data_folder
+            open_app_data_folder,
+            toggle_benchmarking
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

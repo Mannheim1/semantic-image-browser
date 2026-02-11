@@ -615,6 +615,9 @@
         sortAscending = false;
         search(searchQuery);
         break;
+      case "toggle_benchmarking":
+        invoke("toggle_benchmarking");
+        break;
       case "about":
         showAboutModal = true;
         break;
