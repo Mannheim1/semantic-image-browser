@@ -91,7 +91,7 @@
   let isResizingPanel = $state(false);
   let resultsRowEl: HTMLDivElement | null = null;
   let gridContainerEl: HTMLElement | null = null;
-  let imageCellEls = $state<(HTMLDivElement | null)[]>([]);
+  let imageCellEls = $state<(HTMLButtonElement | null)[]>([]);
 
   // ONNX Runtime state
   let ortStatus = $state<OrtStatus | null>(null);
@@ -666,7 +666,7 @@
       {:else}
         <div class="image-grid">
           {#each images as img, index}
-            <div
+            <button
               class="image-cell"
               class:selected={selectedImage?.path === img.path}
               onclick={() => handleImageClick(index)}
@@ -682,14 +682,14 @@
                 <div class="thumbnail-placeholder"></div>
               {/if}
               <span class="filename">{getFilename(img.path)}</span>
-            </div>
+            </button>
           {/each}
         </div>
       {/if}
     </main>
 
     {#if isPanelOpen && selectedImage}
-      <div class="panel-resizer" onmousedown={handlePanelResizeStart}></div>
+      <div class="panel-resizer" role="separator" onmousedown={handlePanelResizeStart}></div>
       <aside class="image-panel" style="width: {panelWidthPct ?? 50}%;">
         <div class="panel-header">
           <div class="panel-title" title={selectedImage.path}>{getFilename(selectedImage.path)}</div>
@@ -735,7 +735,8 @@
   {/if}
 
   {#if showOrtModal}
-    <div class="modal-overlay" onclick={() => { if (!ortDownloading) showOrtModal = false; }}>
+    <!-- svelte-ignore a11y_click_events_have_key_events -->
+    <div class="modal-overlay" role="presentation" onclick={() => { if (!ortDownloading) showOrtModal = false; }}>
       <div class="modal modal-wide" onclick={(e) => e.stopPropagation()}>
         <div class="modal-header">
           <span>Runtime Settings</span>
@@ -877,7 +878,8 @@
   {/if}
 
   {#if showFoldersModal}
-    <div class="modal-overlay" onclick={() => showFoldersModal = false}>
+    <!-- svelte-ignore a11y_click_events_have_key_events -->
+    <div class="modal-overlay" role="presentation" onclick={() => showFoldersModal = false}>
       <div class="modal" onclick={(e) => e.stopPropagation()}>
         <div class="modal-header">
           <span>Manage Folders</span>
@@ -902,7 +904,8 @@
   {/if}
 
   {#if showAboutModal}
-    <div class="modal-overlay" onclick={() => showAboutModal = false}>
+    <!-- svelte-ignore a11y_click_events_have_key_events -->
+    <div class="modal-overlay" role="presentation" onclick={() => showAboutModal = false}>
       <div class="modal" onclick={(e) => e.stopPropagation()}>
         <div class="modal-header">
           <span>About</span>
@@ -921,7 +924,8 @@
   {/if}
 
   {#if showViewControlsModal}
-    <div class="modal-overlay" onclick={() => showViewControlsModal = false}>
+    <!-- svelte-ignore a11y_click_events_have_key_events -->
+    <div class="modal-overlay" role="presentation" onclick={() => showViewControlsModal = false}>
       <div class="modal" onclick={(e) => e.stopPropagation()}>
         <div class="modal-header">
           <span>View Controls</span>
@@ -1090,6 +1094,10 @@
     align-items: center;
     padding: 4px;
     cursor: pointer;
+    background: none;
+    border: none;
+    color: inherit;
+    font: inherit;
   }
 
   .image-cell:hover {
