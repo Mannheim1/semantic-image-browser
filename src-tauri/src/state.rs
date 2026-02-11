@@ -37,10 +37,6 @@ impl EmbeddingBackend {
         }
     }
 
-    /// Returns true if this is the GPU backend.
-    pub fn is_gpu(&self) -> bool {
-        matches!(self, EmbeddingBackend::Gpu(_))
-    }
 }
 
 pub struct AppState {

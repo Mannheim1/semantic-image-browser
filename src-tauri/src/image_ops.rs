@@ -48,7 +48,8 @@ fn decode_jpeg_scaled(path: &Path) -> Result<(Vec<u8>, u32, u32), String> {
     // We want the decoded image to be at least IMAGE_SIZE (256) on each dimension
     // but as small as possible to minimize decode and resize work
     let scaling = choose_jpeg_scale(header.width, header.height, 256);
-    decompressor.set_scaling_factor(scaling);
+    decompressor.set_scaling_factor(scaling)
+        .map_err(|e| format!("Failed to set JPEG scaling factor: {}", e))?;
 
     let scaled_header = header.scaled(scaling);
     let scaled_width = scaled_header.width;

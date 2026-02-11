@@ -10,7 +10,7 @@
 //! - `{app_data}/runtimes/cuda/lib/`
 
 use std::fs;
-use std::io::{self, Read, Write};
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Manager};
 
@@ -110,12 +110,6 @@ impl Platform {
     /// Check if CUDA runtime is available for this platform.
     pub fn cuda_available(&self) -> bool {
         matches!(self, Platform::WindowsX64 | Platform::LinuxX64)
-    }
-
-    /// Check if DirectML runtime is available for this platform.
-    /// TODO: DirectML download not yet implemented.
-    pub fn directml_available(&self) -> bool {
-        matches!(self, Platform::WindowsX64)
     }
 
     /// Get the archive filename for this platform and runtime type.
