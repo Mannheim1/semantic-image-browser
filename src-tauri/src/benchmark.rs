@@ -32,7 +32,7 @@ use std::time::Duration;
 static BENCH_LOG: std::sync::OnceLock<Mutex<BenchLog>> = std::sync::OnceLock::new();
 
 /// Runtime toggle — when false, `log_image` and `begin_scan_session` are no-ops.
-static ENABLED: AtomicBool = AtomicBool::new(true);
+static ENABLED: AtomicBool = AtomicBool::new(false);
 
 pub fn set_enabled(enabled: bool) {
     ENABLED.store(enabled, Ordering::Relaxed);

@@ -5,8 +5,6 @@ use tauri::{AppHandle, Manager};
 
 use crate::state::AppState;
 
-fn default_true() -> bool { true }
-
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AppConfig {
     pub watched_directories: Vec<String>,
@@ -18,7 +16,7 @@ pub struct AppConfig {
     #[serde(default)]
     pub debug_mode: bool,
     /// Enables benchmark CSV logging during scans.
-    #[serde(default = "default_true")]
+    #[serde(default)]
     pub benchmarking: bool,
 }
 
