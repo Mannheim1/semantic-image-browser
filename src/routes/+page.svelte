@@ -2,7 +2,7 @@
   import { invoke } from "@tauri-apps/api/core";
   import { convertFileSrc } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
-  import { open } from "@tauri-apps/plugin-dialog";
+  import { open, message } from "@tauri-apps/plugin-dialog";
   import { onMount, tick } from "svelte";
 
   interface ScanResult {
@@ -400,6 +400,12 @@
     await invoke("open_app_data_folder");
   }
 
+  async function showDependencyPaths() {
+    const deps: [string, string][] = await invoke("get_dependency_paths");
+    const text = deps.map(([name, path]) => `${name}:\n  ${path}`).join("\n\n");
+    await message(text, { title: "Dependency Paths" });
+  }
+
   function handleImageDblClick(img: ImageInfo) {
     openImage(img.path);
   }
@@ -617,6 +623,9 @@
         break;
       case "toggle_benchmarking":
         invoke("toggle_benchmarking");
+        break;
+      case "show_dependency_paths":
+        showDependencyPaths();
         break;
       case "about":
         showAboutModal = true;

@@ -595,6 +595,52 @@ fn check_cuda_dependencies() -> ort_download::CudaDependencyStatus {
     ort_download::check_cuda_dependencies()
 }
 
+/// Collect paths for dependencies that are not bundled with the app.
+#[tauri::command]
+fn get_dependency_paths(app: AppHandle, state: tauri::State<'_, AppState>) -> Vec<(String, String)> {
+    let cfg = config::get_config(&state);
+    let mut deps: Vec<(String, String)> = Vec::new();
+
+    // ONNX Runtime library
+    let runtime_type = cfg.runtime_type.as_deref()
+        .and_then(ort_download::RuntimeType::from_str)
+        .unwrap_or(ort_download::RuntimeType::Cpu);
+    match ort_download::get_ort_library_path(&app, runtime_type) {
+        Ok(Some(p)) => deps.push(("ONNX Runtime".into(), p.display().to_string())),
+        _ => deps.push(("ONNX Runtime".into(), "Not installed".into())),
+    }
+
+    // Model directory
+    match &cfg.model_dir {
+        Some(dir) => deps.push(("Model directory".into(), dir.clone())),
+        None => deps.push(("Model directory".into(), "Not configured".into())),
+    }
+
+    // CUDA DLLs (only relevant when using CUDA runtime)
+    if runtime_type == ort_download::RuntimeType::Cuda {
+        let cuda_dlls: &[(&str, &str)] = &[
+            ("CUDA Runtime", "cudart64_12.dll"),
+            ("cuBLAS", "cublas64_12.dll"),
+            ("cuBLAS Lt", "cublasLt64_12.dll"),
+            ("cuDNN", "cudnn64_9.dll"),
+            ("cuDNN Ops", "cudnn_ops64_9.dll"),
+            ("cuDNN CNN", "cudnn_cnn64_9.dll"),
+        ];
+        let path_var = std::env::var("PATH").unwrap_or_default();
+        for (label, dll) in cuda_dlls {
+            let found = path_var.split(';')
+                .map(|dir| Path::new(dir).join(dll))
+                .find(|p| p.exists());
+            match found {
+                Some(p) => deps.push((label.to_string(), p.display().to_string())),
+                None => deps.push((label.to_string(), "Not found".into())),
+            }
+        }
+    }
+
+    deps
+}
+
 /// Toggle benchmark CSV logging on or off, persisting the choice to config.
 #[tauri::command]
 fn toggle_benchmarking(app: AppHandle, state: tauri::State<'_, AppState>) -> Result<bool, String> {
@@ -784,7 +830,8 @@ pub fn run() {
             is_cuda_available,
             clear_database,
             open_app_data_folder,
-            toggle_benchmarking
+            toggle_benchmarking,
+            get_dependency_paths
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
