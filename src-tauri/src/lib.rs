@@ -1,5 +1,4 @@
 use lancedb::{Connection, Table};
-use serde::Serialize;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -14,7 +13,6 @@ mod database;
 mod embedding;
 mod image_ops;
 mod menu;
-mod ort_download;
 mod scan;
 mod state;
 mod thumbnail;
@@ -67,137 +65,9 @@ fn validate_directory(path: &str) -> Result<(), String> {
     Ok(())
 }
 
-#[derive(Debug, Clone, Serialize)]
-pub struct SiglipConfigInfo {
-    pub has_text: bool,
-    pub has_vision: bool,
-    pub text_hidden_size: Option<i64>,
-    pub vision_hidden_size: Option<i64>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct EmbeddingTestResult {
-    pub model_loaded: bool,
-    pub image_embedding_dim: Option<usize>,
-    pub text_embedding_dim: Option<usize>,
-    pub similarity: Option<f32>,
-    pub error: Option<String>,
-}
-
-#[tauri::command]
-fn inspect_siglip_config(path: String) -> Result<SiglipConfigInfo, String> {
-    let content = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
-    let json: serde_json::Value = serde_json::from_str(&content).map_err(|e| e.to_string())?;
-
-    let text_config = json.get("text_config");
-    let vision_config = json.get("vision_config");
-
-    let text_hidden_size = text_config
-        .and_then(|v| v.get("hidden_size"))
-        .and_then(|v| v.as_i64());
-
-    let vision_hidden_size = vision_config
-        .and_then(|v| v.get("hidden_size"))
-        .and_then(|v| v.as_i64());
-
-    Ok(SiglipConfigInfo {
-        has_text: text_config.is_some(),
-        has_vision: vision_config.is_some(),
-        text_hidden_size,
-        vision_hidden_size,
-    })
-}
-
-#[tauri::command]
-fn test_embedding(app: AppHandle, state: tauri::State<'_, AppState>, model_dir: String, image_path: String, query: String) -> Result<EmbeddingTestResult, String> {
-    use embedding::EmbeddingModel;
-
-    let cfg = config::get_config(&state);
-    let runtime_type = cfg.runtime_type
-        .as_deref()
-        .and_then(ort_download::RuntimeType::from_str)
-        .unwrap_or(ort_download::RuntimeType::Cpu);
-    let ort_path = ort_download::get_ort_library_path(&app, runtime_type)?
-        .ok_or_else(|| format!("{} runtime is not installed.", runtime_type.display_name()))?;
-
-    let model_path = Path::new(&model_dir);
-    let image_file = Path::new(&image_path);
-
-    // Initialize ONNX Runtime using the selected downloaded runtime library.
-    if let Err(e) = embedding::init_ort(&ort_path) {
-        return Ok(EmbeddingTestResult {
-            model_loaded: false,
-            image_embedding_dim: None,
-            text_embedding_dim: None,
-            similarity: None,
-            error: Some(format!("Failed to initialize ONNX Runtime: {}", e)),
-        });
-    }
-
-    // Try to load the model (test always uses CPU for simplicity)
-    let mut model = match EmbeddingModel::load(model_path, false) {
-        Ok(m) => m,
-        Err(e) => {
-            return Ok(EmbeddingTestResult {
-                model_loaded: false,
-                image_embedding_dim: None,
-                text_embedding_dim: None,
-                similarity: None,
-                error: Some(format!("Failed to load model: {}", e)),
-            });
-        }
-    };
-
-    // Try to embed the image
-    let image_emb = match model.embed_image(image_file) {
-        Ok(emb) => emb,
-        Err(e) => {
-            return Ok(EmbeddingTestResult {
-                model_loaded: true,
-                image_embedding_dim: None,
-                text_embedding_dim: None,
-                similarity: None,
-                error: Some(format!("Failed to embed image: {}", e)),
-            });
-        }
-    };
-
-    // Try to embed the text
-    let text_emb = match model.embed_text(&query) {
-        Ok(emb) => emb,
-        Err(e) => {
-            return Ok(EmbeddingTestResult {
-                model_loaded: true,
-                image_embedding_dim: Some(image_emb.len()),
-                text_embedding_dim: None,
-                similarity: None,
-                error: Some(format!("Failed to embed text: {}", e)),
-            });
-        }
-    };
-
-    // Compute cosine similarity (vectors are already L2 normalized, so dot product = cosine sim)
-    let similarity: f32 = image_emb.iter().zip(text_emb.iter()).map(|(a, b)| a * b).sum();
-
-    Ok(EmbeddingTestResult {
-        model_loaded: true,
-        image_embedding_dim: Some(image_emb.len()),
-        text_embedding_dim: Some(text_emb.len()),
-        similarity: Some(similarity),
-        error: None,
-    })
-}
-
 #[tauri::command]
 async fn get_config(state: tauri::State<'_, AppState>) -> Result<AppConfig, String> {
     Ok(config::get_config(&state))
-}
-
-#[tauri::command]
-async fn set_model_config(app: AppHandle, state: tauri::State<'_, AppState>, model_dir: String) -> Result<(), String> {
-    config::update_config(&app, &state, |cfg| {
-        cfg.model_dir = Some(model_dir);
-    })
 }
 
 #[tauri::command]
@@ -527,101 +397,6 @@ async fn open_app_data_folder(app: AppHandle) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
-// ============================================================================
-// ONNX Runtime download commands
-// ============================================================================
-
-#[derive(Clone, serde::Serialize)]
-pub struct OrtDownloadProgress {
-    pub downloaded: u64,
-    pub total: u64,
-}
-
-/// Get the current ONNX Runtime installation status.
-#[tauri::command]
-fn get_ort_status(app: AppHandle, state: tauri::State<'_, AppState>) -> Result<ort_download::OrtStatus, String> {
-    let runtime_type = config::get_config(&state).runtime_type;
-    ort_download::get_ort_status(&app, runtime_type)
-}
-
-/// Get the download size for a runtime type.
-#[tauri::command]
-fn get_ort_download_size(runtime_type: String) -> Result<Option<u64>, String> {
-    let rt = ort_download::RuntimeType::from_str(&runtime_type)
-        .ok_or_else(|| format!("Invalid runtime type: {}", runtime_type))?;
-    Ok(ort_download::get_download_size(rt))
-}
-
-/// Download and install ONNX Runtime.
-#[tauri::command]
-async fn download_ort(app: AppHandle, state: tauri::State<'_, AppState>, runtime_type: String) -> Result<String, String> {
-    let rt = ort_download::RuntimeType::from_str(&runtime_type)
-        .ok_or_else(|| format!("Invalid runtime type: {}", runtime_type))?;
-
-    // Create a channel for progress updates
-    let app_clone = app.clone();
-    let progress_callback = move |downloaded: u64, total: u64| {
-        let _ = app_clone.emit("ort_download_progress", OrtDownloadProgress { downloaded, total });
-    };
-
-    let lib_path = ort_download::download_ort(&app, rt, progress_callback).await?;
-
-    // Save the runtime type to config after successful download
-    config::update_config(&app, &state, |cfg| {
-        cfg.runtime_type = Some(runtime_type.clone());
-    })?;
-
-    Ok(lib_path.to_string_lossy().to_string())
-}
-
-/// Set the runtime type in config (for selecting an already-installed runtime).
-#[tauri::command]
-async fn set_runtime_type(app: AppHandle, state: tauri::State<'_, AppState>, runtime_type: String) -> Result<(), String> {
-    let rt = ort_download::RuntimeType::from_str(&runtime_type)
-        .ok_or_else(|| format!("Invalid runtime type: {}", runtime_type))?;
-
-    // Verify the runtime is installed
-    if !ort_download::is_runtime_installed(&app, rt)? {
-        return Err(format!("Runtime '{}' is not installed", runtime_type));
-    }
-
-    config::update_config(&app, &state, |cfg| {
-        cfg.runtime_type = Some(runtime_type);
-    })
-}
-
-/// Check if CUDA runtime is available for this platform.
-#[tauri::command]
-fn is_cuda_available() -> bool {
-    ort_download::Platform::detect()
-        .map(|p| p.cuda_available())
-        .unwrap_or(false)
-}
-
-/// Uninstall a runtime.
-#[tauri::command]
-async fn uninstall_runtime(app: AppHandle, state: tauri::State<'_, AppState>, runtime_type: String) -> Result<(), String> {
-    let rt = ort_download::RuntimeType::from_str(&runtime_type)
-        .ok_or_else(|| format!("Invalid runtime type: {}", runtime_type))?;
-
-    ort_download::uninstall_runtime(&app, rt)?;
-
-    // If this was the selected runtime, clear the selection
-    if config::get_config(&state).runtime_type.as_deref() == Some(runtime_type.as_str()) {
-        config::update_config(&app, &state, |cfg| {
-            cfg.runtime_type = None;
-        })?;
-    }
-
-    Ok(())
-}
-
-/// Check CUDA system dependencies.
-#[tauri::command]
-fn check_cuda_dependencies() -> ort_download::CudaDependencyStatus {
-    ort_download::check_cuda_dependencies()
-}
-
 /// Show resolved paths for all dependencies.
 ///
 /// Checks bundled resources first (where release builds place everything),
@@ -822,16 +597,19 @@ pub fn run() {
             // Phase 2: Heavy initialization (embedding models) - runs in background
             // This allows the UI to appear immediately while models load
             let handle_for_task = app.handle().clone();
-            let cfg_for_task = cfg.clone();
             tauri::async_runtime::spawn(async move {
                 // Resolve bundled resource paths
                 let bundled = bundled_dir(&handle_for_task);
                 let ort_path = bundled.join("lib").join(ort_lib_filename());
                 let model_path = bundled.join("model");
 
-                // Determine GPU mode from config
-                let runtime_type = cfg_for_task.runtime_type.as_deref().unwrap_or("cpu");
-                let use_gpu = runtime_type == "cuda" || runtime_type == "gpu";
+                // Detect GPU mode by checking if CUDA provider DLLs are bundled
+                let providers_lib = if cfg!(target_os = "windows") {
+                    "onnxruntime_providers_cuda.dll"
+                } else {
+                    "libonnxruntime_providers_cuda.so"
+                };
+                let use_gpu = bundled.join("lib").join(providers_lib).exists();
 
                 println!("ORT library: {}", ort_path.display());
                 println!("Model directory: {}", model_path.display());
@@ -893,10 +671,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            inspect_siglip_config,
-            test_embedding,
             get_config,
-            set_model_config,
             get_embedding_model_status,
             add_watched_directory,
             remove_watched_directory,
@@ -912,13 +687,6 @@ pub fn run() {
             open_image,
             show_in_folder,
             delete_all_thumbnails,
-            get_ort_status,
-            get_ort_download_size,
-            download_ort,
-            set_runtime_type,
-            uninstall_runtime,
-            check_cuda_dependencies,
-            is_cuda_available,
             clear_database,
             open_app_data_folder,
             toggle_benchmarking,
