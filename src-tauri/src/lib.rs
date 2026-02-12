@@ -25,6 +25,33 @@ use embedding::{GpuEmbeddingModel, GPU_BATCH_SIZE};
 use scan::{ScanProgressState, ScanResult, scan_directory_internal};
 use state::{AppState, EmbeddingBackend, EmbeddingPool, MAX_EMBEDDING_WORKERS};
 
+/// Resolve the `bundled/` resource directory.
+///
+/// In production builds, resources are placed alongside the executable by the
+/// Tauri bundler. In dev mode (`cargo tauri dev`), they live in `src-tauri/bundled/`.
+fn bundled_dir(app: &AppHandle) -> PathBuf {
+    if cfg!(dev) {
+        // During `tauri dev`, resolve relative to the Cargo manifest directory
+        // which is src-tauri/ — where bundled/ lives.
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("bundled")
+    } else {
+        app.path().resource_dir()
+            .expect("Failed to resolve resource directory")
+            .join("bundled")
+    }
+}
+
+/// Platform-specific ONNX Runtime library filename.
+fn ort_lib_filename() -> &'static str {
+    if cfg!(target_os = "windows") {
+        "onnxruntime.dll"
+    } else if cfg!(target_os = "macos") {
+        "libonnxruntime.dylib"
+    } else {
+        "libonnxruntime.so"
+    }
+}
+
 /// Validates that a path exists and is a directory.
 fn validate_directory(path: &str) -> Result<(), String> {
     let p = Path::new(path);
@@ -595,30 +622,58 @@ fn check_cuda_dependencies() -> ort_download::CudaDependencyStatus {
     ort_download::check_cuda_dependencies()
 }
 
-/// Collect paths for dependencies that are not bundled with the app.
+/// Show resolved paths for all dependencies.
+///
+/// Checks bundled resources first (where release builds place everything),
+/// then falls back to searching the system PATH for CUDA DLLs (for local dev
+/// where the NVIDIA toolkit is installed separately).
 #[tauri::command]
-fn get_dependency_paths(app: AppHandle, state: tauri::State<'_, AppState>) -> Vec<(String, String)> {
-    let cfg = config::get_config(&state);
-    let mut deps: Vec<(String, String)> = Vec::new();
+fn get_dependency_paths(app: AppHandle) -> Vec<(String, String)> {
+    let bundled = bundled_dir(&app);
+    let lib_dir = bundled.join("lib");
+    let model_path = bundled.join("model");
 
-    // ONNX Runtime library
-    let runtime_type = cfg.runtime_type.as_deref()
-        .and_then(ort_download::RuntimeType::from_str)
-        .unwrap_or(ort_download::RuntimeType::Cpu);
-    match ort_download::get_ort_library_path(&app, runtime_type) {
-        Ok(Some(p)) => deps.push(("ONNX Runtime".into(), p.display().to_string())),
-        _ => deps.push(("ONNX Runtime".into(), "Not installed".into())),
+    let status = |p: &Path| -> String {
+        if p.exists() {
+            p.display().to_string()
+        } else {
+            format!("{} (NOT FOUND)", p.display())
+        }
+    };
+
+    /// Check for a library in the bundled lib dir first, then search PATH.
+    fn find_lib(lib_dir: &Path, filename: &str) -> String {
+        let bundled_path = lib_dir.join(filename);
+        if bundled_path.exists() {
+            return bundled_path.display().to_string();
+        }
+        // Fall back to searching system PATH
+        let path_var = std::env::var("PATH").unwrap_or_default();
+        let sep = if cfg!(target_os = "windows") { ';' } else { ':' };
+        for dir in path_var.split(sep) {
+            let p = Path::new(dir).join(filename);
+            if p.exists() {
+                return format!("{} (system)", p.display());
+            }
+        }
+        format!("{} (NOT FOUND)", bundled_path.display())
     }
 
-    // Model directory
-    match &cfg.model_dir {
-        Some(dir) => deps.push(("Model directory".into(), dir.clone())),
-        None => deps.push(("Model directory".into(), "Not configured".into())),
-    }
+    let mut deps = vec![
+        // ONNX Runtime
+        ("ONNX Runtime".into(), status(&lib_dir.join(ort_lib_filename()))),
+        ("ORT CUDA Provider".into(), find_lib(&lib_dir, if cfg!(target_os = "windows") { "onnxruntime_providers_cuda.dll" } else { "libonnxruntime_providers_cuda.so" })),
+        ("ORT Shared Provider".into(), find_lib(&lib_dir, if cfg!(target_os = "windows") { "onnxruntime_providers_shared.dll" } else { "libonnxruntime_providers_shared.so" })),
+        // Model
+        ("Model directory".into(), status(&model_path)),
+        ("  vision_model.onnx".into(), status(&model_path.join("onnx").join("vision_model.onnx"))),
+        ("  text_model.onnx".into(), status(&model_path.join("onnx").join("text_model.onnx"))),
+        ("  tokenizer.json".into(), status(&model_path.join("tokenizer.json"))),
+    ];
 
-    // CUDA DLLs (only relevant when using CUDA runtime)
-    if runtime_type == ort_download::RuntimeType::Cuda {
-        let cuda_dlls: &[(&str, &str)] = &[
+    // CUDA DLLs — needed for CUDA builds
+    if cfg!(target_os = "windows") {
+        let cuda_libs = [
             ("CUDA Runtime", "cudart64_12.dll"),
             ("cuBLAS", "cublas64_12.dll"),
             ("cuBLAS Lt", "cublasLt64_12.dll"),
@@ -626,15 +681,20 @@ fn get_dependency_paths(app: AppHandle, state: tauri::State<'_, AppState>) -> Ve
             ("cuDNN Ops", "cudnn_ops64_9.dll"),
             ("cuDNN CNN", "cudnn_cnn64_9.dll"),
         ];
-        let path_var = std::env::var("PATH").unwrap_or_default();
-        for (label, dll) in cuda_dlls {
-            let found = path_var.split(';')
-                .map(|dir| Path::new(dir).join(dll))
-                .find(|p| p.exists());
-            match found {
-                Some(p) => deps.push((label.to_string(), p.display().to_string())),
-                None => deps.push((label.to_string(), "Not found".into())),
-            }
+        for (label, dll) in cuda_libs {
+            deps.push((label.into(), find_lib(&lib_dir, dll)));
+        }
+    } else if cfg!(target_os = "linux") {
+        let cuda_libs = [
+            ("CUDA Runtime", "libcudart.so.12"),
+            ("cuBLAS", "libcublas.so.12"),
+            ("cuBLAS Lt", "libcublasLt.so.12"),
+            ("cuDNN", "libcudnn.so.9"),
+            ("cuDNN Ops", "libcudnn_ops.so.9"),
+            ("cuDNN CNN", "libcudnn_cnn.so.9"),
+        ];
+        for (label, so) in cuda_libs {
+            deps.push((label.into(), find_lib(&lib_dir, so)));
         }
     }
 
@@ -759,89 +819,60 @@ pub fn run() {
                 thumbnails_dir,
             });
 
-            // TODO: Automatically trigger a full rescan of watched directories on app launch.
             // Phase 2: Heavy initialization (embedding models) - runs in background
             // This allows the UI to appear immediately while models load
             let handle_for_task = app.handle().clone();
             let cfg_for_task = cfg.clone();
             tauri::async_runtime::spawn(async move {
-                // Determine the runtime type from config (default to CPU)
-                let runtime_type = cfg_for_task.runtime_type
-                    .as_deref()
-                    .and_then(ort_download::RuntimeType::from_str)
-                    .unwrap_or(ort_download::RuntimeType::Cpu);
+                // Resolve bundled resource paths
+                let bundled = bundled_dir(&handle_for_task);
+                let ort_path = bundled.join("lib").join(ort_lib_filename());
+                let model_path = bundled.join("model");
 
-                // Determine the ONNX Runtime library path from downloaded runtime.
-                let ort_path: Option<PathBuf> = match ort_download::get_ort_library_path(&handle_for_task, runtime_type) {
-                    Ok(Some(p)) => {
-                        println!("Using {} runtime: {}", runtime_type.display_name(), p.display());
-                        Some(p)
-                    }
-                    Ok(None) => {
-                        println!("{} runtime not installed. Use Model > Select Runtime to download it.", runtime_type.display_name());
-                        None
-                    }
-                    Err(e) => {
-                        eprintln!("Warning: Failed to check for ONNX Runtime: {}", e);
-                        None
-                    }
-                };
+                // Determine GPU mode from config
+                let runtime_type = cfg_for_task.runtime_type.as_deref().unwrap_or("cpu");
+                let use_gpu = runtime_type == "cuda" || runtime_type == "gpu";
 
-                // Check if CUDA runtime is configured (DirectML would need different handling)
-                let use_gpu = runtime_type == ort_download::RuntimeType::Cuda;
+                println!("ORT library: {}", ort_path.display());
+                println!("Model directory: {}", model_path.display());
 
-                // Try to load the embedding backend if ORT and model are available
-                let (embedding_backend, model_id) = match (ort_path, &cfg_for_task.model_dir) {
-                    (Some(ort_path), Some(model_path)) => {
-                        let model_path = Path::new(model_path);
+                // Initialize ONNX Runtime
+                if let Err(e) = embedding::init_ort(&ort_path) {
+                    eprintln!("Failed to initialize ONNX Runtime: {}", e);
+                    let _ = handle_for_task.emit("model_ready", ());
+                    return;
+                }
 
-                        // Extract model ID from directory name
-                        let model_id = model_path
-                            .file_name()
-                            .and_then(|n| n.to_str())
-                            .map(|s| s.to_string());
+                // Extract model ID from directory name
+                let model_id = Some("siglip2-base-patch16-256".to_string());
 
-                        // Initialize ONNX Runtime
-                        if let Err(e) = embedding::init_ort(&ort_path) {
-                            eprintln!("Warning: Failed to initialize ONNX Runtime: {}", e);
+                let (embedding_backend, model_id) = if use_gpu {
+                    // GPU mode: single model with batched inference
+                    match GpuEmbeddingModel::load(&model_path) {
+                        Ok(model) => {
+                            println!("Using GPU backend with batched inference (batch size: {})", GPU_BATCH_SIZE);
+                            (Some(Arc::new(EmbeddingBackend::Gpu(Mutex::new(model)))), model_id)
+                        }
+                        Err(e) => {
+                            eprintln!("Failed to load GPU embedding model: {}", e);
                             (None, None)
-                        } else if use_gpu {
-                            // GPU mode: single model with batched inference
-                            match GpuEmbeddingModel::load(model_path) {
-                                Ok(model) => {
-                                    println!("Using GPU backend with batched inference (batch size: {})", GPU_BATCH_SIZE);
-                                    (Some(Arc::new(EmbeddingBackend::Gpu(Mutex::new(model)))), model_id)
-                                }
-                                Err(e) => {
-                                    eprintln!("Warning: Failed to load GPU embedding model: {}", e);
-                                    (None, None)
-                                }
-                            }
-                        } else {
-                            // CPU mode: pool of models for thread-parallel inference
-                            let num_workers = std::thread::available_parallelism()
-                                .map(|n| n.get().min(MAX_EMBEDDING_WORKERS))
-                                .unwrap_or(2);
-
-                            match EmbeddingPool::new(model_path, num_workers, false) {
-                                Ok(pool) => {
-                                    println!("Using CPU backend with {} parallel workers", pool.len());
-                                    (Some(Arc::new(EmbeddingBackend::Cpu(pool))), model_id)
-                                }
-                                Err(e) => {
-                                    eprintln!("Warning: Failed to load CPU embedding model pool: {}", e);
-                                    (None, None)
-                                }
-                            }
                         }
                     }
-                    (None, _) => {
-                        println!("ONNX Runtime not available. Semantic search will be disabled.");
-                        (None, None)
-                    }
-                    (_, None) => {
-                        println!("Model directory not configured. Semantic search will be disabled.");
-                        (None, None)
+                } else {
+                    // CPU mode: pool of models for thread-parallel inference
+                    let num_workers = std::thread::available_parallelism()
+                        .map(|n| n.get().min(MAX_EMBEDDING_WORKERS))
+                        .unwrap_or(2);
+
+                    match EmbeddingPool::new(&model_path, num_workers, false) {
+                        Ok(pool) => {
+                            println!("Using CPU backend with {} parallel workers", pool.len());
+                            (Some(Arc::new(EmbeddingBackend::Cpu(pool))), model_id)
+                        }
+                        Err(e) => {
+                            eprintln!("Failed to load CPU embedding model pool: {}", e);
+                            (None, None)
+                        }
                     }
                 };
 
