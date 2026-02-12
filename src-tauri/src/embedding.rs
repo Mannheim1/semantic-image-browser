@@ -15,7 +15,7 @@ use tokenizers::Tokenizer;
 
 use crate::benchmark::{self, PreprocessTiming};
 use crate::database::VISUAL_EMBEDDING_DIM;
-use crate::image_ops::{decode_image_to_rgb, fast_resize_rgb};
+use crate::image_ops::fast_resize_rgb;
 
 /// Stores the result of ORT initialization (success or error message).
 /// Using OnceLock ensures the result is computed once and remembered,
@@ -163,26 +163,6 @@ impl EmbeddingModel {
         })
     }
 
-    /// Generate an embedding for an image file.
-    ///
-    /// Returns a 768-dimensional L2-normalized vector.
-    pub fn embed_image(&mut self, image_path: &Path) -> Result<Vec<f32>, String> {
-        use std::time::Instant;
-
-        // Preprocess the image
-        let (pixel_values, timing) = preprocess_image(image_path)?;
-
-        // Run inference
-        let inference_start = Instant::now();
-        let embedding = self.run_vision_inference(&pixel_values)?;
-        let inference_time = inference_start.elapsed();
-
-        benchmark::log_image(&timing, inference_time, "cpu");
-
-        // L2 normalize
-        Ok(l2_normalize(&embedding))
-    }
-
     /// Generate an embedding from pre-computed pixel values (NCHW float tensor).
     /// Used in the merged scan pipeline where decoding/preprocessing is done separately.
     ///
@@ -310,44 +290,8 @@ impl EmbeddingModel {
     }
 }
 
-/// Preprocess an image for the SigLIP2 vision model.
-///
-/// Steps:
-/// 1. Load and decode the image (using turbojpeg with scaled decoding for JPEGs)
-/// 2. Convert to RGB
-/// 3. Resize to 256x256 (using fast_image_resize with SIMD)
-/// 4. Convert to float and rescale to [0, 1]
-/// 5. Normalize with mean=0.5, std=0.5 (resulting in [-1, 1])
-/// 6. Return as flat NCHW format [1, 3, 256, 256] = 196608 floats
-///
-/// Also returns timing data for benchmark logging.
-pub fn preprocess_image(path: &Path) -> Result<(Vec<f32>, PreprocessTiming), String> {
-    let start = std::time::Instant::now();
-
-    let ext = path
-        .extension()
-        .and_then(|e| e.to_str())
-        .map(|e| e.to_lowercase())
-        .unwrap_or_default();
-
-    let file_size_bytes = std::fs::metadata(path)
-        .map(|m| m.len())
-        .unwrap_or(0);
-
-    let (rgb_data, width, height) = decode_image_to_rgb(path)?;
-    let decode_time = start.elapsed();
-
-    let filename = path.file_name().unwrap_or_default().to_string_lossy();
-    let (pixel_values, mut timing) =
-        preprocess_image_from_rgb(&rgb_data, width, height, &filename, &ext, file_size_bytes, None)?;
-    timing.decode = decode_time;
-
-    Ok((pixel_values, timing))
-}
-
 /// Preprocess pre-decoded RGB image data into an embedding tensor.
-/// Same as preprocess_image but skips the decode step (uses provided RGB data).
-/// The decode_time in the returned timing will be zero.
+/// The decode_time in the returned timing will be zero (caller should set it).
 pub fn preprocess_image_from_rgb(
     rgb_data: &[u8],
     width: u32,
