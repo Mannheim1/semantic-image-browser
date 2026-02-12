@@ -51,21 +51,6 @@ pub fn build_menu(app: &mut tauri::App, config: &AppConfig) -> Result<Menu<Wry>,
             .build()?)
         .build()?;
 
-    // Determine which runtime is currently active
-    let active_runtime = config.runtime_type.as_deref().unwrap_or("cpu");
-
-    let runtime_submenu = SubmenuBuilder::new(app, "Select &Runtime (Restart required)")
-        .item(&CheckMenuItemBuilder::new("CPU").id("runtime_cpu").checked(active_runtime == "cpu").build(app)?)
-        .item(&CheckMenuItemBuilder::new("GPU (DirectML)").id("runtime_directml").enabled(false).checked(active_runtime == "directml").build(app)?)
-        .item(&CheckMenuItemBuilder::new("GPU (CUDA)").id("runtime_cuda").checked(active_runtime == "cuda" || active_runtime == "gpu").build(app)?)
-        .build()?;
-
-    let model_menu = SubmenuBuilder::new(app, "&Model")
-        .item(&runtime_submenu)
-        .separator()
-        .item(&MenuItemBuilder::new("&Runtime settings...").id("model_settings").build(app)?)
-        .build()?;
-
     let help_menu = SubmenuBuilder::new(app, "&Help")
         .item(&MenuItemBuilder::new("&About").id("about").build(app)?)
         .item(&MenuItemBuilder::new("View &Controls").id("view_controls").build(app)?)
@@ -81,11 +66,11 @@ pub fn build_menu(app: &mut tauri::App, config: &AppConfig) -> Result<Menu<Wry>,
             .item(&MenuItemBuilder::new("&Test Bundle URLs...").id("test_bundle_urls").build(app)?)
             .build()?;
         MenuBuilder::new(app)
-            .items(&[&file_menu, &edit_menu, &search_menu, &model_menu, &help_menu, &debug_menu])
+            .items(&[&file_menu, &edit_menu, &search_menu, &help_menu, &debug_menu])
             .build()?
     } else {
         MenuBuilder::new(app)
-            .items(&[&file_menu, &edit_menu, &search_menu, &model_menu, &help_menu])
+            .items(&[&file_menu, &edit_menu, &search_menu, &help_menu])
             .build()?
     };
 
