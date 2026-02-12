@@ -16,7 +16,7 @@ SigLIP2 model integration for image-to-vector and text-to-vector.
 
 **Model**: SigLIP2-base-patch16-256 (768-dimensional embeddings)
 
-**ONNX Runtime**: Uses dynamic library loading (`load-dynamic` feature) to avoid CRT mismatch issues on Windows. The DLL path is configured at runtime.
+**ONNX Runtime**: Uses dynamic library loading (`load-dynamic` feature) to avoid CRT mismatch issues on Windows. The library is loaded from the bundled resources directory at startup.
 
 ### Phase 5: OCR Pipeline
 Tesseract integration, text extraction, storage.
@@ -59,7 +59,6 @@ Data location: OS standard app data directory (`app_local_data_dir`).
 
 ### Stretch Goals (not implemented initially)
 - Remote image hosting: images on NAS with only thumbnails and database local
-- macOS support
 
 ---
 
@@ -96,7 +95,7 @@ Vision-language models (like CLIP, SigLIP) encode both images and text into vect
 Searches query the database only—no filesystem access at search time (except thumbnail retrieval).
 
 ### Configuration Storage
-Watched directories and app settings stored in a JSON file in the app data directory (separate from LanceDB).
+Watched directories and app settings (debug mode, benchmarking) stored in a JSON file in the app data directory (separate from LanceDB).
 
 ### Database Schema (LanceDB/Arrow)
 
@@ -178,53 +177,65 @@ This approach avoids base64 encoding overhead (~33% size reduction), enables par
 - When images are removed from the index (directory unwatched or file deleted), corresponding thumbnails are deleted
 - Optional: periodic cleanup to remove orphaned thumbnails (thumbnails without matching database entries)
 
-### Build Output
-Single Windows executable. ONNX model bundled. No Python, no background services, no console windows.
+### Build Output & Distribution
+
+Six platform variants are built via GitHub Actions CI and published as GitHub Releases:
+- Windows x64 (CPU)
+- Windows x64 (CUDA)
+- macOS ARM64
+- macOS x64
+- Linux x64 (CPU)
+- Linux x64 (CUDA)
+
+Each variant is a self-contained installer that bundles ONNX Runtime, the SigLIP2 model, and (for CUDA variants) NVIDIA CUDA/cuDNN redistributable libraries. No Python, no background services, no console windows, no manual dependency setup.
+
+The runtime type (CPU vs CUDA) is determined by which variant the user downloads rather than an in-app setting. The app detects this at startup by checking whether CUDA provider DLLs are present in the bundled resources.
+
+A version tag push (`v*`) triggers the CI workflow, which downloads all dependencies, builds each variant, and creates a draft GitHub Release with installer assets.
 
 ---
 
 ## Development Setup
 
+### Bundled Dependencies
+
+All runtime dependencies live in `src-tauri/bundled/` (git-ignored). For local development, populate this directory manually:
+
+```
+src-tauri/bundled/
+├── lib/
+│   ├── onnxruntime.dll          # (or .so / .dylib)
+│   ├── onnxruntime_providers_cuda.dll    # CUDA builds only
+│   ├── onnxruntime_providers_shared.dll  # CUDA builds only
+│   ├── cudart64_12.dll                   # CUDA builds only
+│   ├── cublas64_12.dll                   # CUDA builds only
+│   ├── cublasLt64_12.dll                 # CUDA builds only
+│   ├── cudnn64_9.dll                     # CUDA builds only
+│   ├── cudnn_ops64_9.dll                 # CUDA builds only
+│   └── cudnn_cnn64_9.dll                 # CUDA builds only
+└── model/
+    ├── onnx/
+    │   ├── vision_model.onnx
+    │   └── text_model.onnx
+    └── tokenizer.json
+```
+
+In CI, these files are downloaded automatically by the release workflow. For local development, copy them from the ONNX Runtime and NVIDIA redistributable archives.
+
 ### ONNX Runtime
 
-ONNX Runtime must be loaded dynamically at runtime (not statically linked) to avoid CRT mismatch errors on Windows. Download and extract the appropriate runtime:
+ONNX Runtime (v1.23.2) must be loaded dynamically at runtime (not statically linked) to avoid CRT mismatch errors on Windows. The library is loaded from `bundled/lib/` at startup.
 
-**CPU-only:**
-```
-C:\Dev\onnxruntime-win-x64-1.23.2
-```
+Download the appropriate archive from the [ONNX Runtime releases](https://github.com/microsoft/onnxruntime/releases/tag/v1.23.2) and copy the library from its `lib/` directory into `src-tauri/bundled/lib/`. For CUDA builds, use the `-gpu-` variant which also includes provider DLLs.
 
-**GPU (CUDA):**
-```
-C:\Dev\onnxruntime-win-x64-gpu-1.23.2
-```
+### SigLIP2 Model
 
-The ONNX Runtime library is selected from the downloaded runtime configured in app settings.
+The app uses the ONNX-exported SigLIP2-base-patch16-256 model from [HuggingFace](https://huggingface.co/onnx-community/siglip2-base-patch16-256-ONNX). The required files are:
+- `onnx/vision_model.onnx` — Image encoder
+- `onnx/text_model.onnx` — Text encoder
+- `tokenizer.json` — HuggingFace tokenizer for text preprocessing
 
-### SigLIP2 Models
-
-Models are stored locally. The app requires ONNX-exported versions:
-
-**SigLIP2-base-patch16-256 (ONNX exported, recommended):**
-```
-C:\Dev\test\siglip2-base-patch16-256-ONNX
-```
-Contains: `vision_model.onnx`, `text_model.onnx`, `tokenizer.json`, `config.json`
-
-**SigLIP2-base-patch16-naflex (original safetensors):**
-```
-C:\Dev\test\siglip2-base-patch16-naflex
-```
-
-**SigLIP2-base-patch16-naflex (ONNX exported):**
-```
-C:\Dev\test\siglip2-base-patch16-naflex-ONNX
-```
-
-The model directory is configured in app settings (`model_dir`). The app expects:
-- `vision_model.onnx` - Image encoder
-- `text_model.onnx` - Text encoder
-- `tokenizer.json` - HuggingFace tokenizer for text preprocessing
+These are placed in `src-tauri/bundled/model/`.
 
 ### Model Export
 
@@ -254,19 +265,19 @@ Both image and text embeddings are L2-normalized before storage/comparison, mean
 
 ### Inference Backends
 
-The app supports two inference backends, selected based on the `runtime_type` setting:
+The app supports two inference backends, determined by which build variant is installed (detected at startup by checking for bundled CUDA provider DLLs):
 
-**CPU Backend** (`runtime_type: "cpu"`):
+**CPU Backend** (CPU build variants):
 - Creates multiple ONNX session instances (up to 4, limited by `MAX_EMBEDDING_WORKERS`)
 - Each thread processes images one at a time using its own model instance
 - Parallel threads compensate for lack of batching
 - Best for systems without CUDA-capable GPUs
 
-**GPU Backend** (`runtime_type: "gpu"`):
+**GPU Backend** (CUDA build variants):
 - Creates a single ONNX session with CUDA execution provider
 - Processes images in batches (default batch size: 32)
 - Batched inference maximizes GPU utilization by keeping the GPU busy with parallel work
-- Requires CUDA 11.8+ and cuDNN
+- Requires an NVIDIA GPU; CUDA 12.x and cuDNN 9.x libraries are bundled with the app
 - Significantly faster than CPU on supported hardware (e.g., 4070 Ti)
 
 **Why batching matters for GPU**: GPUs achieve high throughput through massive parallelism. Processing one image at a time leaves the GPU mostly idle waiting for CPU-GPU synchronization. Batching amortizes this overhead across many images, keeping GPU compute units saturated.
