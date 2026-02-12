@@ -624,6 +624,9 @@
             a Svelte + TypeScript frontend, with a Rust backend that uses LanceDB for vector search, ONNX Runtime
             for model inference, and Tesseract for OCR.
           </p>
+          {#if buildVariant.includes("CUDA")}
+            <p class="text">This software includes NVIDIA CUDA and cuDNN libraries. NVIDIA, CUDA, and cuDNN are trademarks of NVIDIA Corporation.</p>
+          {/if}
         </div>
       </div>
     </div>
