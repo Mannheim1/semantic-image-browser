@@ -78,6 +78,7 @@ pub fn build_menu(app: &mut tauri::App, config: &AppConfig) -> Result<Menu<Wry>,
             .item(&CheckMenuItemBuilder::new("&Benchmarking").id("toggle_benchmarking").checked(config.benchmarking).build(app)?)
             .separator()
             .item(&MenuItemBuilder::new("&Dependency Paths...").id("show_dependency_paths").build(app)?)
+            .item(&MenuItemBuilder::new("&Test Bundle URLs...").id("test_bundle_urls").build(app)?)
             .build()?;
         MenuBuilder::new(app)
             .items(&[&file_menu, &edit_menu, &search_menu, &model_menu, &help_menu, &debug_menu])

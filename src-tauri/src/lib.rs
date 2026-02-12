@@ -641,6 +641,66 @@ fn get_dependency_paths(app: AppHandle, state: tauri::State<'_, AppState>) -> Ve
     deps
 }
 
+/// All URLs the CI build pipeline would download from when creating bundled releases.
+const BUNDLE_URLS: &[(&str, &str)] = &[
+    // ONNX Runtime — per-platform builds
+    ("ORT Windows x64 CPU",   "https://github.com/microsoft/onnxruntime/releases/download/v1.23.2/onnxruntime-win-x64-1.23.2.zip"),
+    ("ORT Windows x64 CUDA",  "https://github.com/microsoft/onnxruntime/releases/download/v1.23.2/onnxruntime-win-x64-gpu-1.23.2.zip"),
+    ("ORT macOS ARM64",        "https://github.com/microsoft/onnxruntime/releases/download/v1.23.2/onnxruntime-osx-arm64-1.23.2.tgz"),
+    ("ORT macOS x64",          "https://github.com/microsoft/onnxruntime/releases/download/v1.23.2/onnxruntime-osx-x86_64-1.23.2.tgz"),
+    ("ORT Linux x64 CPU",     "https://github.com/microsoft/onnxruntime/releases/download/v1.23.2/onnxruntime-linux-x64-1.23.2.tgz"),
+    ("ORT Linux x64 CUDA",    "https://github.com/microsoft/onnxruntime/releases/download/v1.23.2/onnxruntime-linux-x64-gpu-1.23.2.tgz"),
+
+    // SigLIP2 model files (platform-independent)
+    ("Model: vision_model.onnx", "https://huggingface.co/onnx-community/siglip2-base-patch16-256-ONNX/resolve/main/onnx/vision_model.onnx"),
+    ("Model: text_model.onnx",   "https://huggingface.co/onnx-community/siglip2-base-patch16-256-ONNX/resolve/main/onnx/text_model.onnx"),
+    ("Model: tokenizer.json",    "https://huggingface.co/onnx-community/siglip2-base-patch16-256-ONNX/resolve/main/tokenizer.json"),
+
+    // NVIDIA CUDA redistributables (Windows CUDA builds only)
+    ("CUDA: cudart (Windows)",  "https://developer.download.nvidia.com/compute/cuda/redist/cuda_cudart/windows-x86_64/cuda_cudart-windows-x86_64-12.8.90-archive.zip"),
+    ("CUDA: cublas (Windows)",  "https://developer.download.nvidia.com/compute/cuda/redist/libcublas/windows-x86_64/libcublas-windows-x86_64-12.8.4.1-archive.zip"),
+    ("CUDA: cuDNN (Windows)",   "https://developer.download.nvidia.com/compute/cudnn/redist/cudnn/windows-x86_64/cudnn-windows-x86_64-9.19.0.56_cuda12-archive.zip"),
+
+    // NVIDIA CUDA redistributables (Linux CUDA builds only)
+    ("CUDA: cudart (Linux)",  "https://developer.download.nvidia.com/compute/cuda/redist/cuda_cudart/linux-x86_64/cuda_cudart-linux-x86_64-12.8.90-archive.tar.xz"),
+    ("CUDA: cublas (Linux)",  "https://developer.download.nvidia.com/compute/cuda/redist/libcublas/linux-x86_64/libcublas-linux-x86_64-12.8.4.1-archive.tar.xz"),
+    ("CUDA: cuDNN (Linux)",   "https://developer.download.nvidia.com/compute/cudnn/redist/cudnn/linux-x86_64/cudnn-linux-x86_64-9.19.0.56_cuda12-archive.tar.xz"),
+];
+
+/// Test all bundle download URLs by sending HEAD requests.
+/// Returns a list of (label, url, status) tuples.
+#[tauri::command]
+async fn test_bundle_urls() -> Vec<(String, String, String)> {
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::limited(5))
+        .build()
+        .unwrap_or_default();
+
+    let mut results = Vec::new();
+    for (label, url) in BUNDLE_URLS {
+        let status = match client.head(*url).send().await {
+            Ok(resp) => {
+                let code = resp.status();
+                if code.is_success() {
+                    let size = resp.headers()
+                        .get(reqwest::header::CONTENT_LENGTH)
+                        .and_then(|v| v.to_str().ok())
+                        .and_then(|v| v.parse::<u64>().ok());
+                    match size {
+                        Some(bytes) => format!("OK ({:.1} MB)", bytes as f64 / 1_048_576.0),
+                        None => "OK".into(),
+                    }
+                } else {
+                    format!("FAIL ({})", code)
+                }
+            }
+            Err(e) => format!("ERROR ({})", e),
+        };
+        results.push((label.to_string(), url.to_string(), status));
+    }
+    results
+}
+
 /// Toggle benchmark CSV logging on or off, persisting the choice to config.
 #[tauri::command]
 fn toggle_benchmarking(app: AppHandle, state: tauri::State<'_, AppState>) -> Result<bool, String> {
@@ -831,7 +891,8 @@ pub fn run() {
             clear_database,
             open_app_data_folder,
             toggle_benchmarking,
-            get_dependency_paths
+            get_dependency_paths,
+            test_bundle_urls
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
