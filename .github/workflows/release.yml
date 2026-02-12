@@ -1,0 +1,203 @@
+name: Build & Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # ── Windows ──────────────────────────────────────────────
+          - name: Windows x64 (CPU)
+            os: windows-latest
+            rust-target: x86_64-pc-windows-msvc
+            ort-url: https://github.com/microsoft/onnxruntime/releases/download/v1.23.2/onnxruntime-win-x64-1.23.2.zip
+            ort-lib: onnxruntime.dll
+            ort-inner-dir: onnxruntime-win-x64-1.23.2
+            cuda: false
+
+          - name: Windows x64 (CUDA)
+            os: windows-latest
+            rust-target: x86_64-pc-windows-msvc
+            ort-url: https://github.com/microsoft/onnxruntime/releases/download/v1.23.2/onnxruntime-win-x64-gpu-1.23.2.zip
+            ort-lib: onnxruntime.dll
+            ort-inner-dir: onnxruntime-win-x64-gpu-1.23.2
+            cuda: true
+            cuda-cudart-url: https://developer.download.nvidia.com/compute/cuda/redist/cuda_cudart/windows-x86_64/cuda_cudart-windows-x86_64-12.8.90-archive.zip
+            cuda-cublas-url: https://developer.download.nvidia.com/compute/cuda/redist/libcublas/windows-x86_64/libcublas-windows-x86_64-12.8.4.1-archive.zip
+            cuda-cudnn-url: https://developer.download.nvidia.com/compute/cudnn/redist/cudnn/windows-x86_64/cudnn-windows-x86_64-9.19.0.56_cuda12-archive.zip
+            cuda-lib-glob: "*.dll"
+
+          # ── macOS ────────────────────────────────────────────────
+          - name: macOS ARM64
+            os: macos-latest
+            rust-target: aarch64-apple-darwin
+            ort-url: https://github.com/microsoft/onnxruntime/releases/download/v1.23.2/onnxruntime-osx-arm64-1.23.2.tgz
+            ort-lib: libonnxruntime.dylib
+            ort-inner-dir: onnxruntime-osx-arm64-1.23.2
+            cuda: false
+
+          - name: macOS x64
+            os: macos-13
+            rust-target: x86_64-apple-darwin
+            ort-url: https://github.com/microsoft/onnxruntime/releases/download/v1.23.2/onnxruntime-osx-x86_64-1.23.2.tgz
+            ort-lib: libonnxruntime.dylib
+            ort-inner-dir: onnxruntime-osx-x86_64-1.23.2
+            cuda: false
+
+          # ── Linux ────────────────────────────────────────────────
+          - name: Linux x64 (CPU)
+            os: ubuntu-22.04
+            rust-target: x86_64-unknown-linux-gnu
+            ort-url: https://github.com/microsoft/onnxruntime/releases/download/v1.23.2/onnxruntime-linux-x64-1.23.2.tgz
+            ort-lib: libonnxruntime.so
+            ort-inner-dir: onnxruntime-linux-x64-1.23.2
+            cuda: false
+
+          - name: Linux x64 (CUDA)
+            os: ubuntu-22.04
+            rust-target: x86_64-unknown-linux-gnu
+            ort-url: https://github.com/microsoft/onnxruntime/releases/download/v1.23.2/onnxruntime-linux-x64-gpu-1.23.2.tgz
+            ort-lib: libonnxruntime.so
+            ort-inner-dir: onnxruntime-linux-x64-gpu-1.23.2
+            cuda: true
+            cuda-cudart-url: https://developer.download.nvidia.com/compute/cuda/redist/cuda_cudart/linux-x86_64/cuda_cudart-linux-x86_64-12.8.90-archive.tar.xz
+            cuda-cublas-url: https://developer.download.nvidia.com/compute/cuda/redist/libcublas/linux-x86_64/libcublas-linux-x86_64-12.8.4.1-archive.tar.xz
+            cuda-cudnn-url: https://developer.download.nvidia.com/compute/cudnn/redist/cudnn/linux-x86_64/cudnn-linux-x86_64-9.19.0.56_cuda12-archive.tar.xz
+            cuda-lib-glob: "*.so*"
+
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ── System dependencies ────────────────────────────────────
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev \
+            patchelf nasm cmake
+
+      - name: Install macOS dependencies
+        if: runner.os == 'macOS'
+        run: brew install nasm cmake
+
+      - name: Install Windows dependencies
+        if: runner.os == 'Windows'
+        run: choco install nasm cmake --yes
+        shell: pwsh
+
+      # ── Toolchains ─────────────────────────────────────────────
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust-target }}
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      # ── Download ONNX Runtime ──────────────────────────────────
+      - name: Download ONNX Runtime
+        shell: bash
+        run: |
+          mkdir -p src-tauri/bundled/lib
+          cd /tmp
+          if [[ "${{ matrix.ort-url }}" == *.zip ]]; then
+            curl -L -o ort.zip "${{ matrix.ort-url }}"
+            unzip -q ort.zip
+          else
+            curl -L -o ort.tgz "${{ matrix.ort-url }}"
+            tar xf ort.tgz
+          fi
+          cp "${{ matrix.ort-inner-dir }}/lib/${{ matrix.ort-lib }}" "$GITHUB_WORKSPACE/src-tauri/bundled/lib/"
+          # Also copy any other shared libs in the lib dir (e.g. onnxruntime_providers_*)
+          cp "${{ matrix.ort-inner-dir }}"/lib/*.{dll,so,dylib,so.*} "$GITHUB_WORKSPACE/src-tauri/bundled/lib/" 2>/dev/null || true
+
+      # ── Download model ─────────────────────────────────────────
+      - name: Download SigLIP2 model
+        shell: bash
+        run: |
+          mkdir -p src-tauri/bundled/model/onnx
+          curl -L -o src-tauri/bundled/model/onnx/vision_model.onnx \
+            "https://huggingface.co/onnx-community/siglip2-base-patch16-256-ONNX/resolve/main/onnx/vision_model.onnx"
+          curl -L -o src-tauri/bundled/model/onnx/text_model.onnx \
+            "https://huggingface.co/onnx-community/siglip2-base-patch16-256-ONNX/resolve/main/onnx/text_model.onnx"
+          curl -L -o src-tauri/bundled/model/tokenizer.json \
+            "https://huggingface.co/onnx-community/siglip2-base-patch16-256-ONNX/resolve/main/tokenizer.json"
+
+      # ── Download CUDA libs (CUDA variants only) ────────────────
+      - name: Download CUDA redistributables
+        if: matrix.cuda
+        shell: bash
+        run: |
+          mkdir -p src-tauri/bundled/lib
+          cd /tmp
+
+          # cudart
+          if [[ "${{ matrix.cuda-cudart-url }}" == *.zip ]]; then
+            curl -L -o cudart.zip "${{ matrix.cuda-cudart-url }}"
+            unzip -q cudart.zip -d cudart
+          else
+            curl -L -o cudart.tar.xz "${{ matrix.cuda-cudart-url }}"
+            mkdir cudart && tar xf cudart.tar.xz -C cudart --strip-components=1
+          fi
+          find cudart -name "${{ matrix.cuda-lib-glob }}" -exec cp {} "$GITHUB_WORKSPACE/src-tauri/bundled/lib/" \;
+
+          # cublas
+          if [[ "${{ matrix.cuda-cublas-url }}" == *.zip ]]; then
+            curl -L -o cublas.zip "${{ matrix.cuda-cublas-url }}"
+            unzip -q cublas.zip -d cublas
+          else
+            curl -L -o cublas.tar.xz "${{ matrix.cuda-cublas-url }}"
+            mkdir cublas && tar xf cublas.tar.xz -C cublas --strip-components=1
+          fi
+          find cublas -name "${{ matrix.cuda-lib-glob }}" -exec cp {} "$GITHUB_WORKSPACE/src-tauri/bundled/lib/" \;
+
+          # cudnn
+          if [[ "${{ matrix.cuda-cudnn-url }}" == *.zip ]]; then
+            curl -L -o cudnn.zip "${{ matrix.cuda-cudnn-url }}"
+            unzip -q cudnn.zip -d cudnn
+          else
+            curl -L -o cudnn.tar.xz "${{ matrix.cuda-cudnn-url }}"
+            mkdir cudnn && tar xf cudnn.tar.xz -C cudnn --strip-components=1
+          fi
+          find cudnn -name "${{ matrix.cuda-lib-glob }}" -exec cp {} "$GITHUB_WORKSPACE/src-tauri/bundled/lib/" \;
+
+      - name: List bundled files
+        shell: bash
+        run: find src-tauri/bundled -type f | head -50
+
+      # ── Build ──────────────────────────────────────────────────
+      - name: Build Tauri app
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_CONFIG: '{"bundle":{"resources":["bundled/lib/*","bundled/model/onnx/*","bundled/model/tokenizer.json"]}}'
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: "${{ github.ref_name }}"
+          releaseBody: "See the assets below to download for your platform."
+          releaseDraft: true
+          prerelease: false
+          args: --target ${{ matrix.rust-target }}
