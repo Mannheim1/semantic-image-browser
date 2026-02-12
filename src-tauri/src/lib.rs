@@ -397,6 +397,37 @@ async fn open_app_data_folder(app: AppHandle) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
+/// Return a human-readable label for this build variant, e.g. "Windows x64 (CUDA)".
+#[tauri::command]
+fn get_build_variant(app: AppHandle) -> String {
+    let os = if cfg!(target_os = "windows") {
+        "Windows"
+    } else if cfg!(target_os = "macos") {
+        "macOS"
+    } else {
+        "Linux"
+    };
+
+    let arch = if cfg!(target_arch = "x86_64") {
+        "x64"
+    } else if cfg!(target_arch = "aarch64") {
+        "ARM64"
+    } else {
+        std::env::consts::ARCH
+    };
+
+    let cuda_provider = if cfg!(target_os = "windows") {
+        "onnxruntime_providers_cuda.dll"
+    } else {
+        "libonnxruntime_providers_cuda.so"
+    };
+    let has_cuda = bundled_dir(&app).join("lib").join(cuda_provider).exists();
+
+    let accel = if has_cuda { " (CUDA)" } else { " (CPU)" };
+
+    format!("{} {}{}", os, arch, accel)
+}
+
 /// Show resolved paths for all dependencies.
 ///
 /// Checks bundled resources first (where release builds place everything),
@@ -690,6 +721,7 @@ pub fn run() {
             clear_database,
             open_app_data_folder,
             toggle_benchmarking,
+            get_build_variant,
             get_dependency_paths,
             test_bundle_urls
         ])

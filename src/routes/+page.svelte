@@ -2,6 +2,7 @@
   import { invoke } from "@tauri-apps/api/core";
   import { convertFileSrc } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
+  import { getVersion } from "@tauri-apps/api/app";
   import { open, message } from "@tauri-apps/plugin-dialog";
   import { onMount, tick } from "svelte";
 
@@ -35,6 +36,8 @@
   let isScanning = $state(false);
   let watchedDirectories = $state<string[]>([]);
   let indexedCount = $state(0);
+  let appVersion = $state("");
+  let buildVariant = $state("");
   let embeddingModelLoaded = $state(false);
   let modelLoading = $state(true);
   let lastScanDurationMs = $state<number | null>(null);
@@ -164,6 +167,8 @@
   }
 
   async function loadInitialData() {
+    appVersion = await getVersion();
+    buildVariant = await invoke("get_build_variant");
     watchedDirectories = await invoke("get_watched_directories");
     indexedCount = await invoke("get_indexed_count");
     // Only update embeddingModelLoaded if we're not in the initial loading phase
@@ -612,6 +617,7 @@
           <button class="modal-close" onclick={() => showAboutModal = false}>×</button>
         </div>
         <div class="modal-body">
+          <p class="about-version">Version {appVersion} — {buildVariant}</p>
           <p class="text">
             Semantic Image Search helps you find images using natural-language queries by indexing local folders,
             generating thumbnails, and ranking results with visual embeddings. The app is built with Tauri v2 and
@@ -1039,6 +1045,12 @@
     display: flex;
     flex-direction: column;
     gap: 12px;
+  }
+
+  .about-version {
+    font-size: 13px;
+    color: var(--text-secondary);
+    margin: 0;
   }
 
   /* Folders Modal Styles */
