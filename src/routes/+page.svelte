@@ -3,6 +3,8 @@
   import { convertFileSrc } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
   import { getVersion } from "@tauri-apps/api/app";
+  import { getCurrentWebview } from "@tauri-apps/api/webview";
+  import { getCurrentWindow } from "@tauri-apps/api/window";
   import { open, message } from "@tauri-apps/plugin-dialog";
   import { onMount, tick } from "svelte";
 
@@ -68,6 +70,7 @@
   let ocrSemantic = $state(false);
   let showAboutModal = $state(false);
   let showViewControlsModal = $state(false);
+  let zoomLevel = $state(1);
 
   // Sort state
   type SortField = "relevance" | "created_at" | "modified_at" | "file_size";
@@ -393,7 +396,7 @@
     };
   });
 
-  function handleMenuEvent(menuId: string) {
+  async function handleMenuEvent(menuId: string) {
     switch (menuId) {
       case "add_folder":
         addDirectory();
@@ -469,6 +472,24 @@
       case "view_controls":
         showViewControlsModal = true;
         break;
+      case "zoom_in":
+        zoomLevel = Math.min(3, zoomLevel + 0.1);
+        await getCurrentWebview().setZoom(zoomLevel);
+        break;
+      case "zoom_out":
+        zoomLevel = Math.max(0.2, zoomLevel - 0.1);
+        await getCurrentWebview().setZoom(zoomLevel);
+        break;
+      case "reset_zoom":
+        zoomLevel = 1;
+        await getCurrentWebview().setZoom(zoomLevel);
+        break;
+      case "toggle_fullscreen": {
+        const currentWindow = getCurrentWindow();
+        const isFullscreen = await currentWindow.isFullscreen();
+        await currentWindow.setFullscreen(!isFullscreen);
+        break;
+      }
     }
   }
 </script>
