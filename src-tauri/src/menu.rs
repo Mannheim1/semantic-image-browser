@@ -29,6 +29,14 @@ pub fn build_menu(app: &mut tauri::App, config: &AppConfig) -> Result<Menu<Wry>,
         .item(&PredefinedMenuItem::select_all(app, None)?)
         .build()?;
 
+    let view_menu = SubmenuBuilder::new(app, "&View")
+        .item(&MenuItemBuilder::new("Zoom &In").id("zoom_in").accelerator("CmdOrCtrl+=").build(app)?)
+        .item(&MenuItemBuilder::new("Zoom &Out").id("zoom_out").accelerator("CmdOrCtrl+-").build(app)?)
+        .item(&MenuItemBuilder::new("&Reset Zoom").id("reset_zoom").accelerator("CmdOrCtrl+0").build(app)?)
+        .separator()
+        .item(&MenuItemBuilder::new("Toggle &Fullscreen").id("toggle_fullscreen").accelerator("F11").build(app)?)
+        .build()?;
+
     let search_menu = SubmenuBuilder::new(app, "&Search")
         .item(&CheckMenuItemBuilder::new("&Lexical OCR").id("ocr_lexical").build(app)?)
         .item(&CheckMenuItemBuilder::new("&Semantic OCR").id("ocr_semantic").build(app)?)
@@ -66,11 +74,11 @@ pub fn build_menu(app: &mut tauri::App, config: &AppConfig) -> Result<Menu<Wry>,
             .item(&MenuItemBuilder::new("&Test Bundle URLs...").id("test_bundle_urls").build(app)?)
             .build()?;
         MenuBuilder::new(app)
-            .items(&[&file_menu, &edit_menu, &search_menu, &help_menu, &debug_menu])
+            .items(&[&file_menu, &edit_menu, &view_menu, &search_menu, &help_menu, &debug_menu])
             .build()?
     } else {
         MenuBuilder::new(app)
-            .items(&[&file_menu, &edit_menu, &search_menu, &help_menu])
+            .items(&[&file_menu, &edit_menu, &view_menu, &search_menu, &help_menu])
             .build()?
     };
 
