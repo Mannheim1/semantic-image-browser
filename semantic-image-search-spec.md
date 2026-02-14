@@ -86,8 +86,8 @@ Vision-language models (like CLIP, SigLIP) encode both images and text into vect
 3. **Display**: Results return paths → thumbnails served from cache
 
 ### Indexing Flow
-1. User selects one or more directories via native folder picker dialog
-2. App recursively scans selected directories for images
+1. User selects one or more directories via native folder picker dialog (multi-select supported)
+2. App scans selected directories for image files (top-level only, no subdirectory recursion)
 3. New/modified images are processed (embeddings generated, metadata extracted)
 4. Deleted images are removed from the database
 5. Periodic re-scan keeps the database in sync with the filesystem
