@@ -191,14 +191,17 @@
   async function addDirectory() {
     const selected = await open({
       directory: true,
-      multiple: false,
-      title: "Select folder to watch"
+      multiple: true,
+      title: "Select folder(s) to watch"
     });
 
     if (selected) {
+      const paths = Array.isArray(selected) ? selected : [selected];
       startScan("adding");
       const start = performance.now();
-      await invoke("add_watched_directory", { path: selected });
+      for (const path of paths) {
+        await invoke("add_watched_directory", { path });
+      }
       lastScanDurationMs = performance.now() - start;
       console.log(`Scan completed in ${formatDuration(lastScanDurationMs)}`);
       endScan();

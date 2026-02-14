@@ -53,6 +53,7 @@ pub fn scan_directory(dir: &Path) -> Result<Vec<ScannedFile>, String> {
     let mut files = Vec::new();
 
     for entry in WalkDir::new(dir)
+        .max_depth(1)
         .follow_links(false)
         .into_iter()
         .filter_map(|e| e.ok())
