@@ -179,11 +179,10 @@ This approach avoids base64 encoding overhead (~33% size reduction), enables par
 
 ### Build Output & Distribution
 
-Six platform variants are built via GitHub Actions CI and published as GitHub Releases:
+Five platform variants are built via GitHub Actions CI and published as GitHub Releases:
 - Windows x64 (CPU)
 - Windows x64 (CUDA)
 - macOS ARM64
-- macOS x64
 - Linux x64 (CPU)
 - Linux x64 (CUDA)
 
