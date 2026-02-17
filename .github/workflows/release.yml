@@ -44,14 +44,6 @@ jobs:
             ort-inner-dir: onnxruntime-osx-arm64-1.23.2
             cuda: false
 
-          - name: macOS x64
-            os: macos-13
-            rust-target: x86_64-apple-darwin
-            ort-url: https://github.com/microsoft/onnxruntime/releases/download/v1.23.2/onnxruntime-osx-x86_64-1.23.2.tgz
-            ort-lib: libonnxruntime.dylib
-            ort-inner-dir: onnxruntime-osx-x86_64-1.23.2
-            cuda: false
-
           # ── Linux ────────────────────────────────────────────────
           - name: Linux x64 (CPU)
             os: ubuntu-22.04
@@ -87,15 +79,15 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev \
-            patchelf nasm cmake
+            patchelf nasm cmake protobuf-compiler
 
       - name: Install macOS dependencies
         if: runner.os == 'macOS'
-        run: brew install nasm cmake
+        run: brew install nasm cmake protobuf
 
       - name: Install Windows dependencies
         if: runner.os == 'Windows'
-        run: choco install nasm cmake --yes
+        run: choco install nasm cmake protoc --yes
         shell: pwsh
 
       # ── Toolchains ─────────────────────────────────────────────
