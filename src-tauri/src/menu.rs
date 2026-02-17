@@ -19,16 +19,6 @@ pub fn build_menu(app: &mut tauri::App, config: &AppConfig) -> Result<Menu<Wry>,
         .item(&PredefinedMenuItem::quit(app, None)?)
         .build()?;
 
-    let edit_menu = SubmenuBuilder::new(app, "&Edit")
-        .item(&PredefinedMenuItem::undo(app, None)?)
-        .item(&PredefinedMenuItem::redo(app, None)?)
-        .separator()
-        .item(&PredefinedMenuItem::cut(app, None)?)
-        .item(&PredefinedMenuItem::copy(app, None)?)
-        .item(&PredefinedMenuItem::paste(app, None)?)
-        .item(&PredefinedMenuItem::select_all(app, None)?)
-        .build()?;
-
     let view_menu = SubmenuBuilder::new(app, "&View")
         .item(&MenuItemBuilder::new("Zoom &In").id("zoom_in").accelerator("CmdOrCtrl+=").build(app)?)
         .item(&MenuItemBuilder::new("Zoom &Out").id("zoom_out").accelerator("CmdOrCtrl+-").build(app)?)
