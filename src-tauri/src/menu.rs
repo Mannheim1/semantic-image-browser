@@ -64,11 +64,11 @@ pub fn build_menu(app: &mut tauri::App, config: &AppConfig) -> Result<Menu<Wry>,
             .item(&MenuItemBuilder::new("&Test Bundle URLs").id("test_bundle_urls").build(app)?)
             .build()?;
         MenuBuilder::new(app)
-            .items(&[&file_menu, &edit_menu, &view_menu, &search_menu, &help_menu, &debug_menu])
+            .items(&[&file_menu, &search_menu, &view_menu, &help_menu, &debug_menu])
             .build()?
     } else {
         MenuBuilder::new(app)
-            .items(&[&file_menu, &edit_menu, &view_menu, &search_menu, &help_menu])
+            .items(&[&file_menu, &search_menu, &view_menu, &help_menu])
             .build()?
     };
 
