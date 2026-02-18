@@ -47,6 +47,11 @@ google-services.json
 # Claude Code temporary files
 tmpclaude-*-cwd
 
+# Dev notes
+cuda-bundling-notes.md
+semantic-image-search-spec.md
+siglip2-naflex-notes.md
+
 # Rust/Tauri
 src-tauri/target/
 src-tauri/bundled/
