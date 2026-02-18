@@ -24,7 +24,9 @@ pub fn config_path(app: &AppHandle) -> Result<PathBuf, String> {
 pub fn load_config(app: &AppHandle) -> Result<AppConfig, String> {
     let path = config_path(app)?;
     if !path.exists() {
-        return Ok(AppConfig::default());
+        let default = AppConfig::default();
+        save_config(app, &default)?;
+        return Ok(default);
     }
     let content = fs::read_to_string(&path).map_err(|e| e.to_string())?;
     serde_json::from_str(&content).map_err(|e| e.to_string())
