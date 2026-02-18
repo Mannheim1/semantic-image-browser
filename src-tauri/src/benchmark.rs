@@ -38,6 +38,10 @@ pub fn set_enabled(enabled: bool) {
     ENABLED.store(enabled, Ordering::Relaxed);
 }
 
+pub fn is_enabled() -> bool {
+    ENABLED.load(Ordering::Relaxed)
+}
+
 
 const CSV_HEADER: &str = "timestamp,file,file_type,file_size_bytes,source_width,source_height,phase,decode_ms,decode_ms_per_kb,decode_ms_per_kpx,thumbnail_ms,thumbnail_ms_per_kpx,resize_ms,resize_ms_per_kpx,tensor_ms,inference_ms";
 

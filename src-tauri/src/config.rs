@@ -11,9 +11,6 @@ pub struct AppConfig {
     /// Enables debug-only UI (menu item at startup).
     #[serde(default)]
     pub debug_mode: bool,
-    /// Enables benchmark CSV logging during scans.
-    #[serde(default)]
-    pub benchmarking: bool,
 }
 
 pub fn config_path(app: &AppHandle) -> Result<PathBuf, String> {

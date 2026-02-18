@@ -567,15 +567,12 @@ async fn test_bundle_urls() -> Vec<(String, String, String)> {
     results
 }
 
-/// Toggle benchmark CSV logging on or off, persisting the choice to config.
+/// Toggle benchmark CSV logging on or off for this session.
 #[tauri::command]
-fn toggle_benchmarking(app: AppHandle, state: tauri::State<'_, AppState>) -> Result<bool, String> {
-    let new_value = !config::get_config(&state).benchmarking;
-    config::update_config(&app, &state, |cfg| {
-        cfg.benchmarking = new_value;
-    })?;
+fn toggle_benchmarking() -> bool {
+    let new_value = !benchmark::is_enabled();
     benchmark::set_enabled(new_value);
-    Ok(new_value)
+    new_value
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -601,7 +598,6 @@ pub fn run() {
             let app_data = handle.path().app_local_data_dir().expect("Failed to get app data dir");
             std::fs::create_dir_all(&app_data).ok();
             benchmark::init(&app_data);
-            benchmark::set_enabled(cfg.benchmarking);
 
             // Compute thumbnails directory once (never changes)
             let thumbnails_dir = app_data.join("thumbnails");

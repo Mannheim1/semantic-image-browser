@@ -58,7 +58,7 @@ pub fn build_menu(app: &mut tauri::App, config: &AppConfig) -> Result<Menu<Wry>,
         let debug_menu = SubmenuBuilder::new(app, "&Debug")
             .item(&MenuItemBuilder::new("Debug mode enabled").id("debug_mode_enabled").enabled(false).build(app)?)
             .separator()
-            .item(&CheckMenuItemBuilder::new("&Benchmarking").id("toggle_benchmarking").checked(config.benchmarking).build(app)?)
+            .item(&CheckMenuItemBuilder::new("&Benchmarking").id("toggle_benchmarking").checked(false).build(app)?)
             .separator()
             .item(&MenuItemBuilder::new("&Dependency Paths").id("show_dependency_paths").build(app)?)
             .item(&MenuItemBuilder::new("&Test Bundle URLs").id("test_bundle_urls").build(app)?)
