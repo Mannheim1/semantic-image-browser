@@ -1,8 +1,8 @@
 [package]
 name = "semantic-image-browser"
 version = "0.1.0"
-description = "A Tauri App"
-authors = ["you"]
+description = "Zero-setup desktop app for local natural language image search using vector embeddings"
+authors = ["Mannheim"]
 license = "GPL-3.0-only"
 edition = "2021"
 
