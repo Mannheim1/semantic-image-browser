@@ -256,7 +256,6 @@
   }
 
   async function testBundleUrls() {
-    await message("Testing all bundle download URLs...\nThis may take a moment.", { title: "Test Bundle URLs" });
     const results: [string, string, string][] = await invoke("test_bundle_urls");
     const text = results.map(([label, _url, status]) => `${status.startsWith("OK") ? "✓" : "✗"} ${label}: ${status}`).join("\n");
     await message(text, { title: "Bundle URL Test Results" });
