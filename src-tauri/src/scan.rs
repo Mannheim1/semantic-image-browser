@@ -4,7 +4,7 @@
 //! - Directory traversal to discover image files
 //! - Diffing against the database to find new/modified images
 //! - Decode-once pipeline: shared RGB data feeds both thumbnail generation and embedding
-//! - CPU mode (thread-parallel), GPU mode (batched inference), and thumbnail-only mode
+//! - Orchestration driven by InferenceConfig (thread-parallel or batched)
 //! - Progress reporting to the frontend via Tauri events
 
 use serde::Serialize;
@@ -18,7 +18,7 @@ use walkdir::WalkDir;
 
 use crate::benchmark::{self, PreprocessTiming};
 use crate::database::{self, ImageRecord};
-use crate::embedding::{GpuEmbeddingModel, GPU_BATCH_SIZE, PreprocessedBatch, preprocess_image_from_rgb, IMAGE_SIZE};
+use crate::embedding::{EmbeddingModel, PreprocessedBatch, preprocess_image_from_rgb, IMAGE_SIZE};
 use crate::image_ops::decode_image_to_rgb;
 use crate::state::EmbeddingBackend;
 use crate::thumbnail;
@@ -87,6 +87,46 @@ pub fn system_time_to_millis(time: SystemTime) -> i64 {
     time.duration_since(SystemTime::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0)
+}
+
+// ── Per-image processing ────────────────────────────────────────────
+
+/// Decode an image, generate its thumbnail, and preprocess it for embedding.
+/// Thumbnail errors are non-fatal — the embedding pipeline continues regardless.
+fn decode_thumbnail_preprocess(
+    path_str: &str,
+    file_type: &str,
+    file_size: u64,
+    thumb_dir: &Path,
+    mut resizer: Option<&mut fast_image_resize::Resizer>,
+) -> Result<(Vec<f32>, PreprocessTiming), String> {
+    let source_path = Path::new(path_str);
+    let start = std::time::Instant::now();
+
+    // Decode once — shared RGB data feeds both thumbnail and embedding
+    let (rgb_data, width, height) = decode_image_to_rgb(source_path)?;
+    let decode_time = start.elapsed();
+
+    // Generate thumbnail from decoded RGB data (non-fatal on error)
+    let thumb_start = std::time::Instant::now();
+    let thumb_path = thumbnail::thumbnail_path(thumb_dir, source_path);
+    if !thumbnail::thumbnail_is_current(&thumb_path, source_path) {
+        let _ = thumbnail::generate_thumbnail_from_rgb(
+            &rgb_data, width, height, &thumb_path, resizer.as_deref_mut(),
+        );
+    }
+    let thumb_time = thumb_start.elapsed();
+
+    // Preprocess for embedding from same decoded RGB data
+    let filename = source_path.file_name()
+        .unwrap_or_default().to_string_lossy();
+    let (pixel_values, mut timing) = preprocess_image_from_rgb(
+        &rgb_data, width, height, &filename, file_type, file_size, resizer,
+    )?;
+    timing.decode = decode_time;
+    timing.thumbnail = thumb_time;
+
+    Ok((pixel_values, timing))
 }
 
 // ── Progress reporting ──────────────────────────────────────────────
@@ -246,9 +286,11 @@ pub async fn scan_directory_internal(
         let processing_errors: Vec<String>;
 
         match embedding_backend {
-            Some(EmbeddingBackend::Cpu(pool)) => {
-                // CPU mode: each worker decodes once, generates thumbnail, then runs embedding inference.
-                let num_workers = pool.len();
+            Some(backend) if backend.config.batch_size <= 1 => {
+                // Thread-parallel mode: round-robin images across model instances.
+                // Each worker thread decodes, generates thumbnail, preprocesses, and runs
+                // single-image inference sequentially.
+                let num_workers = backend.models.len();
                 let thumb_dir_ref = thumb_dir;
 
                 let emb_results = std::sync::Mutex::new(vec![None; num_images]);
@@ -268,7 +310,7 @@ pub async fn scan_directory_internal(
                         let errors = &errors;
                         let emb_results = &emb_results;
 
-                        let model_mutex = match pool.get(worker_idx) {
+                        let model_mutex = match backend.models.get(worker_idx) {
                             Some(m) => m,
                             None => continue,
                         };
@@ -287,56 +329,15 @@ pub async fn scan_directory_internal(
                             let mut resizer = fast_image_resize::Resizer::new();
 
                             for (original_idx, (path_str, file_type, file_size)) in &bucket {
-                                let source_path = Path::new(path_str.as_str());
-                                let start = std::time::Instant::now();
-
-                                // Decode once
-                                let decode_result = decode_image_to_rgb(source_path);
-                                let decode_time = start.elapsed();
-
-                                let (rgb_data, width, height) = match decode_result {
-                                    Ok(data) => data,
-                                    Err(e) => {
-                                        errors.lock().unwrap().push(format!(
-                                            "Decode error for {}: {}", path_str, e
-                                        ));
-                                        if let Some(progress) = progress_ref {
-                                            progress.increment();
-                                        }
-                                        continue;
-                                    }
-                                };
-
-                                // Generate thumbnail from decoded RGB data
-                                let thumb_start = std::time::Instant::now();
-                                let thumb_path = thumbnail::thumbnail_path(thumb_dir_ref, source_path);
-                                if !thumbnail::thumbnail_is_current(&thumb_path, source_path) {
-                                    if let Err(e) = thumbnail::generate_thumbnail_from_rgb(
-                                        &rgb_data, width, height, &thumb_path, Some(&mut resizer),
-                                    ) {
-                                        errors.lock().unwrap().push(format!(
-                                            "Thumbnail error for {}: {}", path_str, e
-                                        ));
-                                    }
-                                }
-                                let thumb_time = thumb_start.elapsed();
-
-                                // Preprocess for embedding from same decoded RGB data
-                                let filename = source_path.file_name()
-                                    .unwrap_or_default().to_string_lossy();
-
-                                match preprocess_image_from_rgb(
-                                    &rgb_data, width, height, &filename, file_type, *file_size, Some(&mut resizer),
+                                match decode_thumbnail_preprocess(
+                                    path_str, file_type, *file_size, thumb_dir_ref, Some(&mut resizer),
                                 ) {
-                                    Ok((pixel_values, mut timing)) => {
-                                        timing.decode = decode_time;
-                                        timing.thumbnail = thumb_time;
-
+                                    Ok((pixel_values, timing)) => {
                                         let inference_start = std::time::Instant::now();
                                         match model.embed_preprocessed(&pixel_values) {
                                             Ok(emb) => {
                                                 let inference_time = inference_start.elapsed();
-                                                benchmark::log_image(&timing, inference_time, "cpu");
+                                                benchmark::log_image(&timing, inference_time, "single");
                                                 emb_results.lock().unwrap()[*original_idx] = Some(emb);
                                             }
                                             Err(e) => {
@@ -348,7 +349,7 @@ pub async fn scan_directory_internal(
                                     }
                                     Err(e) => {
                                         errors.lock().unwrap().push(format!(
-                                            "Preprocess error for {}: {}", path_str, e
+                                            "Processing error for {}: {}", path_str, e
                                         ));
                                     }
                                 }
@@ -365,24 +366,26 @@ pub async fn scan_directory_internal(
                 processing_errors = errors.into_inner().unwrap();
             }
 
-            Some(EmbeddingBackend::Gpu(model_mutex)) => {
-                // GPU mode: producer threads decode + thumbnail + preprocess in parallel via Rayon,
+            Some(backend) => {
+                // Batched mode: Rayon producers decode + thumbnail + preprocess in parallel,
                 // send preprocessed tensors through a bounded channel.
-                // Consumer collects batches and runs GPU inference.
+                // Consumer collects batches and runs batched inference.
                 use std::sync::mpsc;
+
+                let batch_size = backend.config.batch_size;
 
                 let mut emb_results: Vec<Option<Vec<f32>>> = vec![None; num_images];
                 let mut errors: Vec<String> = Vec::new();
                 let thumb_dir_owned = thumb_dir.to_path_buf();
 
-                let mut model = match model_mutex.lock() {
+                let mut model = match backend.models[0].lock() {
                     Ok(m) => m,
                     Err(e) => {
-                        return Err(format!("Failed to lock GPU embedding model: {}", e));
+                        return Err(format!("Failed to lock embedding model: {}", e));
                     }
                 };
 
-                let (tx, rx) = mpsc::sync_channel::<(usize, Result<(Vec<f32>, PreprocessTiming), String>)>(GPU_BATCH_SIZE * 2);
+                let (tx, rx) = mpsc::sync_channel::<(usize, Result<(Vec<f32>, PreprocessTiming), String>)>(batch_size * 2);
 
                 let progress_for_consumer = progress.clone();
 
@@ -396,56 +399,22 @@ pub async fn scan_directory_internal(
                 std::thread::spawn(move || {
                     use rayon::prelude::*;
                     inputs_owned.par_iter().for_each(|(idx, path_str, file_type, file_size)| {
-                        let source_path = Path::new(path_str.as_str());
-                        let start = std::time::Instant::now();
-
-                        // Decode once
-                        let decode_result = decode_image_to_rgb(source_path);
-                        let decode_time = start.elapsed();
-
-                        let result = match decode_result {
-                            Ok((rgb_data, width, height)) => {
-                                // Generate thumbnail from decoded RGB data
-                                let thumb_start = std::time::Instant::now();
-                                let thumb_path = thumbnail::thumbnail_path(&thumb_dir_owned, source_path);
-                                if !thumbnail::thumbnail_is_current(&thumb_path, source_path) {
-                                    // Thumbnail errors are non-fatal for the embedding pipeline
-                                    let _ = thumbnail::generate_thumbnail_from_rgb(
-                                        &rgb_data, width, height, &thumb_path, None,
-                                    );
-                                }
-                                let thumb_time = thumb_start.elapsed();
-
-                                // Preprocess for embedding
-                                let filename = source_path.file_name()
-                                    .unwrap_or_default().to_string_lossy();
-                                match preprocess_image_from_rgb(
-                                    &rgb_data, width, height, &filename, file_type, *file_size, None,
-                                ) {
-                                    Ok((pixel_values, mut timing)) => {
-                                        timing.decode = decode_time;
-                                        timing.thumbnail = thumb_time;
-                                        Ok((pixel_values, timing))
-                                    }
-                                    Err(e) => Err(e),
-                                }
-                            }
-                            Err(e) => Err(e),
-                        };
-
+                        let result = decode_thumbnail_preprocess(
+                            path_str, file_type, *file_size, &thumb_dir_owned, None,
+                        );
                         let _ = tx.send((*idx, result));
                     });
                     // tx drops here, closing the channel
                 });
 
-                // Consumer: collect preprocessed images into batches, run GPU inference
+                // Consumer: collect preprocessed images into batches, run batched inference
                 let paths_for_errors: Vec<String> = processing_inputs.iter().map(|(p, _, _)| p.clone()).collect();
                 let pixels_per_image = 3 * (IMAGE_SIZE as usize * IMAGE_SIZE as usize);
-                let mut batch_pixel_data: Vec<f32> = Vec::with_capacity(GPU_BATCH_SIZE * pixels_per_image);
-                let mut batch_indices: Vec<usize> = Vec::with_capacity(GPU_BATCH_SIZE);
-                let mut batch_timings: Vec<PreprocessTiming> = Vec::with_capacity(GPU_BATCH_SIZE);
+                let mut batch_pixel_data: Vec<f32> = Vec::with_capacity(batch_size * pixels_per_image);
+                let mut batch_indices: Vec<usize> = Vec::with_capacity(batch_size);
+                let mut batch_timings: Vec<PreprocessTiming> = Vec::with_capacity(batch_size);
 
-                let flush_batch = |model: &mut std::sync::MutexGuard<'_, GpuEmbeddingModel>,
+                let flush_batch = |model: &mut std::sync::MutexGuard<'_, EmbeddingModel>,
                                    pixel_data: &mut Vec<f32>,
                                    indices: &mut Vec<usize>,
                                    timings: &mut Vec<PreprocessTiming>,
@@ -495,7 +464,7 @@ pub async fn scan_directory_internal(
                             batch_indices.push(original_idx);
                             batch_timings.push(timing);
 
-                            if batch_indices.len() >= GPU_BATCH_SIZE {
+                            if batch_indices.len() >= batch_size {
                                 flush_batch(
                                     &mut model, &mut batch_pixel_data, &mut batch_indices,
                                     &mut batch_timings, &mut emb_results, &mut errors,

@@ -15,6 +15,11 @@ edition = "2021"
 name = "semantic_image_browser_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+[features]
+default = ["backend-cpu"]
+backend-cpu = []
+backend-cuda = []
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 

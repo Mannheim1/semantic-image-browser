@@ -6,6 +6,7 @@
 //! - Text tokenization
 //! - Generating embeddings for images and text queries
 
+#[cfg(feature = "backend-cuda")]
 use ort::execution_providers::CUDAExecutionProvider;
 use ort::session::Session;
 use ort::value::Value;
@@ -90,6 +91,40 @@ const IMAGE_MEAN: [f32; 3] = [0.5, 0.5, 0.5];
 /// Normalization std (per channel)
 const IMAGE_STD: [f32; 3] = [0.5, 0.5, 0.5];
 
+/// Return the execution providers for the active backend feature.
+///
+/// - `backend-cuda`: CUDA provider (errors on failure to load)
+/// - `backend-cpu` (default): empty list → ORT uses its built-in CPU provider
+fn execution_providers() -> Vec<ort::execution_providers::ExecutionProviderDispatch> {
+    #[cfg(feature = "backend-cuda")]
+    {
+        vec![CUDAExecutionProvider::default().build().error_on_failure()]
+    }
+    #[cfg(not(feature = "backend-cuda"))]
+    {
+        vec![]
+    }
+}
+
+/// Build an ONNX session for the given model file, using the active backend's execution providers.
+fn build_session(model_path: &Path, label: &str) -> Result<Session, String> {
+    let providers = execution_providers();
+    let builder = Session::builder()
+        .map_err(|e| format!("Failed to create {} session builder: {}", label, e))?;
+
+    let builder = if providers.is_empty() {
+        builder
+    } else {
+        builder
+            .with_execution_providers(providers)
+            .map_err(|e| format!("Failed to register execution providers for {}: {}", label, e))?
+    };
+
+    builder
+        .commit_from_file(model_path)
+        .map_err(|e| format!("Failed to load {}: {}", label, e))
+}
+
 /// Holds the loaded ONNX sessions for vision and text encoding.
 pub struct EmbeddingModel {
     vision_session: Session,
@@ -105,8 +140,8 @@ impl EmbeddingModel {
     /// - `onnx/text_model.onnx`
     /// - `tokenizer.json`
     ///
-    /// If `use_gpu` is true, attempts to use CUDA execution provider.
-    pub fn load(model_dir: &Path, use_gpu: bool) -> Result<Self, String> {
+    /// The execution provider is determined at compile time by the active backend feature.
+    pub fn load(model_dir: &Path) -> Result<Self, String> {
         let vision_path = model_dir.join("onnx").join("vision_model.onnx");
         let text_path = model_dir.join("onnx").join("text_model.onnx");
         let tokenizer_path = model_dir.join("tokenizer.json");
@@ -122,37 +157,9 @@ impl EmbeddingModel {
             return Err(format!("Tokenizer not found: {}", tokenizer_path.display()));
         }
 
-        // Load vision model
-        let vision_session = if use_gpu {
-            Session::builder()
-                .map_err(|e| format!("Failed to create vision session builder: {}", e))?
-                .with_execution_providers([CUDAExecutionProvider::default().build().error_on_failure()])
-                .map_err(|e| format!("Failed to register CUDA execution provider for vision model: {}. Make sure CUDA 11.8+ and cuDNN are installed.", e))?
-                .commit_from_file(&vision_path)
-                .map_err(|e| format!("Failed to load vision model: {}", e))?
-        } else {
-            Session::builder()
-                .map_err(|e| format!("Failed to create vision session builder: {}", e))?
-                .commit_from_file(&vision_path)
-                .map_err(|e| format!("Failed to load vision model: {}", e))?
-        };
+        let vision_session = build_session(&vision_path, "vision model")?;
+        let text_session = build_session(&text_path, "text model")?;
 
-        // Load text model
-        let text_session = if use_gpu {
-            Session::builder()
-                .map_err(|e| format!("Failed to create text session builder: {}", e))?
-                .with_execution_providers([CUDAExecutionProvider::default().build().error_on_failure()])
-                .map_err(|e| format!("Failed to register CUDA execution provider for text model: {}. Make sure CUDA 11.8+ and cuDNN are installed.", e))?
-                .commit_from_file(&text_path)
-                .map_err(|e| format!("Failed to load text model: {}", e))?
-        } else {
-            Session::builder()
-                .map_err(|e| format!("Failed to create text session builder: {}", e))?
-                .commit_from_file(&text_path)
-                .map_err(|e| format!("Failed to load text model: {}", e))?
-        };
-
-        // Load tokenizer
         let tokenizer = Tokenizer::from_file(&tokenizer_path)
             .map_err(|e| format!("Failed to load tokenizer: {}", e))?;
 
@@ -164,7 +171,7 @@ impl EmbeddingModel {
     }
 
     /// Generate an embedding from pre-computed pixel values (NCHW float tensor).
-    /// Used in the merged scan pipeline where decoding/preprocessing is done separately.
+    /// Used in the scan pipeline where decoding/preprocessing is done separately.
     ///
     /// Returns a 768-dimensional L2-normalized vector.
     pub fn embed_preprocessed(&mut self, pixel_values: &[f32]) -> Result<Vec<f32>, String> {
@@ -176,14 +183,108 @@ impl EmbeddingModel {
     ///
     /// Returns a 768-dimensional L2-normalized vector.
     pub fn embed_text(&mut self, query: &str) -> Result<Vec<f32>, String> {
-        // Tokenize the text
         let input_ids = self.tokenize(query)?;
-
-        // Run inference
         let embedding = self.run_text_inference(&input_ids)?;
-
-        // L2 normalize
         Ok(l2_normalize(&embedding))
+    }
+
+    /// Run batched vision inference on a preprocessed batch, returning per-image embeddings.
+    ///
+    /// Takes a `PreprocessedBatch` and runs the vision model once for the whole batch.
+    /// Returns a Vec of Results, one per image in the original batch (preserving order).
+    pub fn infer_batch(&mut self, batch: &PreprocessedBatch) -> Vec<Result<Vec<f32>, String>> {
+        use std::time::Instant;
+
+        let mut results: Vec<Result<Vec<f32>, String>> = Vec::with_capacity(batch.count);
+        for i in 0..batch.count {
+            if let Some(err) = &batch.errors[i] {
+                results.push(Err(err.clone()));
+            } else {
+                results.push(Err("Not processed".to_string()));
+            }
+        }
+
+        if batch.valid_indices.is_empty() {
+            return results;
+        }
+
+        // Run batched inference
+        let num_valid = batch.valid_indices.len() as i64;
+        let shape = [num_valid, 3, IMAGE_SIZE as i64, IMAGE_SIZE as i64];
+
+        let input_tensor = match Value::from_array((shape, batch.pixel_data.clone())) {
+            Ok(t) => t,
+            Err(e) => {
+                let err = format!("Failed to create batched vision input tensor: {}", e);
+                for &idx in &batch.valid_indices {
+                    results[idx] = Err(err.clone());
+                }
+                return results;
+            }
+        };
+
+        let inference_start = Instant::now();
+        let outputs = match self.vision_session.run(ort::inputs!["pixel_values" => input_tensor]) {
+            Ok(o) => o,
+            Err(e) => {
+                let err = format!("Batched vision inference failed: {}", e);
+                for &idx in &batch.valid_indices {
+                    results[idx] = Err(err.clone());
+                }
+                return results;
+            }
+        };
+        let inference_time = inference_start.elapsed();
+
+        let pooler_output = match outputs.get("pooler_output") {
+            Some(o) => o,
+            None => {
+                let err = "pooler_output not found in vision model outputs".to_string();
+                for &idx in &batch.valid_indices {
+                    results[idx] = Err(err.clone());
+                }
+                return results;
+            }
+        };
+
+        let (_shape, data) = match pooler_output.try_extract_tensor::<f32>() {
+            Ok(d) => d,
+            Err(e) => {
+                let err = format!("Failed to extract batched pooler_output tensor: {}", e);
+                for &idx in &batch.valid_indices {
+                    results[idx] = Err(err.clone());
+                }
+                return results;
+            }
+        };
+
+        // Split the batched output into individual embeddings
+        let embedding_dim = VISUAL_EMBEDDING_DIM as usize;
+        let flat_data: Vec<f32> = data.iter().copied().collect();
+
+        // Compute per-image share of inference time for logging
+        let per_image_inference = inference_time / batch.valid_indices.len() as u32;
+
+        for (batch_idx, &original_idx) in batch.valid_indices.iter().enumerate() {
+            let start = batch_idx * embedding_dim;
+            let end = start + embedding_dim;
+            if end <= flat_data.len() {
+                let embedding: Vec<f32> = flat_data[start..end].to_vec();
+                results[original_idx] = Ok(l2_normalize(&embedding));
+            } else {
+                results[original_idx] = Err(format!(
+                    "Embedding index out of bounds: expected {}..{}, got len {}",
+                    start, end, flat_data.len()
+                ));
+            }
+
+            // Log per-image timing
+            if let Some(timing) = &batch.timings[original_idx] {
+                benchmark::log_image(timing, per_image_inference, "batch");
+            }
+        }
+
+        results
     }
 
     /// Tokenize text for the model.
@@ -358,13 +459,8 @@ fn l2_normalize(v: &[f32]) -> Vec<f32> {
     }
 }
 
-/// Default batch size for GPU inference.
-/// 32 is a good balance for a 4070 Ti (12GB VRAM).
-/// Each image at 256x256 float32 RGB = ~768KB, so 32 images = ~24MB batch tensor.
-pub const GPU_BATCH_SIZE: usize = 32;
-
 /// Result of parallel preprocessing for a batch of images.
-/// Contains the concatenated pixel data ready for GPU inference,
+/// Contains the concatenated pixel data ready for batched inference,
 /// along with per-image tracking info for error handling and logging.
 pub struct PreprocessedBatch {
     /// Concatenated f32 pixel data for all successfully preprocessed images.
@@ -377,226 +473,6 @@ pub struct PreprocessedBatch {
     pub errors: Vec<Option<String>>,
     /// Total number of images in this batch.
     pub count: usize,
-}
-
-/// GPU-optimized embedding model that processes images in batches.
-/// Uses a single ONNX session to maximize GPU utilization.
-pub struct GpuEmbeddingModel {
-    vision_session: Session,
-    text_session: Session,
-    tokenizer: Tokenizer,
-}
-
-impl GpuEmbeddingModel {
-    /// Load the embedding model for GPU batched inference.
-    ///
-    /// Unlike EmbeddingModel which creates multiple instances for CPU parallelism,
-    /// GpuEmbeddingModel uses a single session since the GPU handles parallelism internally.
-    pub fn load(model_dir: &Path) -> Result<Self, String> {
-        let vision_path = model_dir.join("onnx").join("vision_model.onnx");
-        let text_path = model_dir.join("onnx").join("text_model.onnx");
-        let tokenizer_path = model_dir.join("tokenizer.json");
-
-        // Verify files exist
-        if !vision_path.exists() {
-            return Err(format!("Vision model not found: {}", vision_path.display()));
-        }
-        if !text_path.exists() {
-            return Err(format!("Text model not found: {}", text_path.display()));
-        }
-        if !tokenizer_path.exists() {
-            return Err(format!("Tokenizer not found: {}", tokenizer_path.display()));
-        }
-
-        // Load vision model with CUDA
-        let vision_session = Session::builder()
-            .map_err(|e| format!("Failed to create vision session builder: {}", e))?
-            .with_execution_providers([CUDAExecutionProvider::default().build().error_on_failure()])
-            .map_err(|e| format!("Failed to register CUDA execution provider for vision model: {}. Make sure CUDA 11.8+ and cuDNN are installed.", e))?
-            .commit_from_file(&vision_path)
-            .map_err(|e| format!("Failed to load vision model: {}", e))?;
-
-        // Load text model with CUDA
-        let text_session = Session::builder()
-            .map_err(|e| format!("Failed to create text session builder: {}", e))?
-            .with_execution_providers([CUDAExecutionProvider::default().build().error_on_failure()])
-            .map_err(|e| format!("Failed to register CUDA execution provider for text model: {}. Make sure CUDA 11.8+ and cuDNN are installed.", e))?
-            .commit_from_file(&text_path)
-            .map_err(|e| format!("Failed to load text model: {}", e))?;
-
-        // Load tokenizer
-        let tokenizer = Tokenizer::from_file(&tokenizer_path)
-            .map_err(|e| format!("Failed to load tokenizer: {}", e))?;
-
-        println!("Loaded GPU embedding model (single session for batched inference)");
-        Ok(Self {
-            vision_session,
-            text_session,
-            tokenizer,
-        })
-    }
-
-    /// Run GPU inference on a preprocessed batch, returning per-image embeddings.
-    ///
-    /// Takes a `PreprocessedBatch` from `preprocess_batch()` and runs the vision model.
-    /// Returns a Vec of Results, one per image in the original batch (preserving order).
-    pub fn infer_batch(&mut self, batch: &PreprocessedBatch) -> Vec<Result<Vec<f32>, String>> {
-        use std::time::Instant;
-
-        let mut results: Vec<Result<Vec<f32>, String>> = Vec::with_capacity(batch.count);
-        for i in 0..batch.count {
-            if let Some(err) = &batch.errors[i] {
-                results.push(Err(err.clone()));
-            } else {
-                results.push(Err("Not processed".to_string()));
-            }
-        }
-
-        if batch.valid_indices.is_empty() {
-            return results;
-        }
-
-        // Run batched inference
-        let num_valid = batch.valid_indices.len() as i64;
-        let shape = [num_valid, 3, IMAGE_SIZE as i64, IMAGE_SIZE as i64];
-
-        let input_tensor = match Value::from_array((shape, batch.pixel_data.clone())) {
-            Ok(t) => t,
-            Err(e) => {
-                let err = format!("Failed to create batched vision input tensor: {}", e);
-                for &idx in &batch.valid_indices {
-                    results[idx] = Err(err.clone());
-                }
-                return results;
-            }
-        };
-
-        let inference_start = Instant::now();
-        let outputs = match self.vision_session.run(ort::inputs!["pixel_values" => input_tensor]) {
-            Ok(o) => o,
-            Err(e) => {
-                let err = format!("Batched vision inference failed: {}", e);
-                for &idx in &batch.valid_indices {
-                    results[idx] = Err(err.clone());
-                }
-                return results;
-            }
-        };
-        let inference_time = inference_start.elapsed();
-
-        let pooler_output = match outputs.get("pooler_output") {
-            Some(o) => o,
-            None => {
-                let err = "pooler_output not found in vision model outputs".to_string();
-                for &idx in &batch.valid_indices {
-                    results[idx] = Err(err.clone());
-                }
-                return results;
-            }
-        };
-
-        let (_shape, data) = match pooler_output.try_extract_tensor::<f32>() {
-            Ok(d) => d,
-            Err(e) => {
-                let err = format!("Failed to extract batched pooler_output tensor: {}", e);
-                for &idx in &batch.valid_indices {
-                    results[idx] = Err(err.clone());
-                }
-                return results;
-            }
-        };
-
-        // Split the batched output into individual embeddings
-        let embedding_dim = VISUAL_EMBEDDING_DIM as usize;
-        let flat_data: Vec<f32> = data.iter().copied().collect();
-
-        // Compute per-image share of inference time for logging
-        let per_image_inference = inference_time / batch.valid_indices.len() as u32;
-
-        for (batch_idx, &original_idx) in batch.valid_indices.iter().enumerate() {
-            let start = batch_idx * embedding_dim;
-            let end = start + embedding_dim;
-            if end <= flat_data.len() {
-                let embedding: Vec<f32> = flat_data[start..end].to_vec();
-                results[original_idx] = Ok(l2_normalize(&embedding));
-            } else {
-                results[original_idx] = Err(format!(
-                    "Embedding index out of bounds: expected {}..{}, got len {}",
-                    start, end, flat_data.len()
-                ));
-            }
-
-            // Log per-image timing
-            if let Some(timing) = &batch.timings[original_idx] {
-                benchmark::log_image(timing, per_image_inference, "gpu_batch");
-            }
-        }
-
-        results
-    }
-
-    /// Generate an embedding for a text query.
-    ///
-    /// Text queries are typically single items, so no batching needed here.
-    pub fn embed_text(&mut self, query: &str) -> Result<Vec<f32>, String> {
-        let input_ids = self.tokenize(query)?;
-
-        // Create input tensor with shape [1, sequence_length]
-        let shape = [1_i64, input_ids.len() as i64];
-        let input_tensor = Value::from_array((shape, input_ids))
-            .map_err(|e| format!("Failed to create text input tensor: {}", e))?;
-
-        let outputs = self
-            .text_session
-            .run(ort::inputs!["input_ids" => input_tensor])
-            .map_err(|e| format!("Text inference failed: {}", e))?;
-
-        let pooler_output = outputs
-            .get("pooler_output")
-            .ok_or("pooler_output not found in text model outputs")?;
-
-        let (_shape, data) = pooler_output
-            .try_extract_tensor::<f32>()
-            .map_err(|e| format!("Failed to extract pooler_output tensor: {}", e))?;
-
-        let embedding: Vec<f32> = data.iter().copied().collect();
-
-        if embedding.len() != VISUAL_EMBEDDING_DIM as usize {
-            return Err(format!(
-                "Unexpected embedding dimension: expected {}, got {}",
-                VISUAL_EMBEDDING_DIM,
-                embedding.len()
-            ));
-        }
-
-        Ok(l2_normalize(&embedding))
-    }
-
-    /// Tokenize text for the model.
-    fn tokenize(&self, text: &str) -> Result<Vec<i64>, String> {
-        let text_lower = text.to_lowercase();
-
-        let encoding = self
-            .tokenizer
-            .encode(text_lower, true)
-            .map_err(|e| format!("Tokenization failed: {}", e))?;
-
-        let mut ids: Vec<i64> = encoding
-            .get_ids()
-            .iter()
-            .map(|&id| id as i64)
-            .collect();
-
-        if ids.len() > MAX_SEQ_LENGTH {
-            ids.truncate(MAX_SEQ_LENGTH);
-        }
-
-        while ids.len() < MAX_SEQ_LENGTH {
-            ids.push(0);
-        }
-
-        Ok(ids)
-    }
 }
 
 #[cfg(test)]

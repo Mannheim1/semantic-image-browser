@@ -22,6 +22,7 @@ jobs:
             ort-lib: onnxruntime.dll
             ort-inner-dir: onnxruntime-win-x64-1.23.2
             cuda: false
+            cargo-features: ""
 
           - name: Windows x64 (CUDA)
             os: windows-latest
@@ -30,6 +31,7 @@ jobs:
             ort-lib: onnxruntime.dll
             ort-inner-dir: onnxruntime-win-x64-gpu-1.23.2
             cuda: true
+            cargo-features: "--features backend-cuda"
             cuda-cudart-url: https://developer.download.nvidia.com/compute/cuda/redist/cuda_cudart/windows-x86_64/cuda_cudart-windows-x86_64-12.8.90-archive.zip
             cuda-cublas-url: https://developer.download.nvidia.com/compute/cuda/redist/libcublas/windows-x86_64/libcublas-windows-x86_64-12.8.4.1-archive.zip
             cuda-cudnn-url: https://developer.download.nvidia.com/compute/cudnn/redist/cudnn/windows-x86_64/cudnn-windows-x86_64-9.19.0.56_cuda12-archive.zip
@@ -43,6 +45,7 @@ jobs:
             ort-lib: libonnxruntime.dylib
             ort-inner-dir: onnxruntime-osx-arm64-1.23.2
             cuda: false
+            cargo-features: ""
 
 
     name: ${{ matrix.name }}
@@ -164,4 +167,4 @@ jobs:
           releaseBody: "See the assets below to download for your platform."
           releaseDraft: true
           prerelease: false
-          args: --target ${{ matrix.rust-target }}
+          args: --target ${{ matrix.rust-target }} ${{ matrix.cargo-features }}

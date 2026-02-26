@@ -2,7 +2,6 @@ use lancedb::{Connection, Table};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::Mutex;
 use std::sync::RwLock;
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_opener::OpenerExt;
@@ -19,9 +18,8 @@ mod thumbnail;
 
 use config::AppConfig;
 use database::{FilterOptions, ImageInfo, SortOptions};
-use embedding::{GpuEmbeddingModel, GPU_BATCH_SIZE};
 use scan::{ScanProgressState, ScanResult, scan_directory_internal};
-use state::{AppState, EmbeddingBackend, EmbeddingPool, MAX_EMBEDDING_WORKERS};
+use state::{AppState, EmbeddingBackend};
 
 /// Resolve the `bundled/` resource directory.
 ///
@@ -399,7 +397,7 @@ async fn open_app_data_folder(app: AppHandle) -> Result<(), String> {
 
 /// Return a human-readable label for this build variant, e.g. "Windows x64 (CUDA)".
 #[tauri::command]
-fn get_build_variant(app: AppHandle) -> String {
+fn get_build_variant() -> String {
     let os = if cfg!(target_os = "windows") {
         "Windows"
     } else if cfg!(target_os = "macos") {
@@ -416,14 +414,11 @@ fn get_build_variant(app: AppHandle) -> String {
         std::env::consts::ARCH
     };
 
-    let cuda_provider = if cfg!(target_os = "windows") {
-        "onnxruntime_providers_cuda.dll"
+    let accel = if cfg!(feature = "backend-cuda") {
+        " (CUDA)"
     } else {
-        "libonnxruntime_providers_cuda.so"
+        " (CPU)"
     };
-    let has_cuda = bundled_dir(&app).join("lib").join(cuda_provider).exists();
-
-    let accel = if has_cuda { " (CUDA)" } else { " (CPU)" };
 
     format!("{} {}{}", os, arch, accel)
 }
@@ -630,14 +625,6 @@ pub fn run() {
                 let ort_path = bundled.join("lib").join(ort_lib_filename());
                 let model_path = bundled.join("model");
 
-                // Detect GPU mode by checking if CUDA provider DLLs are bundled
-                let providers_lib = if cfg!(target_os = "windows") {
-                    "onnxruntime_providers_cuda.dll"
-                } else {
-                    "libonnxruntime_providers_cuda.so"
-                };
-                let use_gpu = bundled.join("lib").join(providers_lib).exists();
-
                 println!("ORT library: {}", ort_path.display());
                 println!("Model directory: {}", model_path.display());
 
@@ -648,36 +635,13 @@ pub fn run() {
                     return;
                 }
 
-                // Extract model ID from directory name
                 let model_id = Some("siglip2-base-patch16-256".to_string());
 
-                let (embedding_backend, model_id) = if use_gpu {
-                    // GPU mode: single model with batched inference
-                    match GpuEmbeddingModel::load(&model_path) {
-                        Ok(model) => {
-                            println!("Using GPU backend with batched inference (batch size: {})", GPU_BATCH_SIZE);
-                            (Some(Arc::new(EmbeddingBackend::Gpu(Mutex::new(model)))), model_id)
-                        }
-                        Err(e) => {
-                            eprintln!("Failed to load GPU embedding model: {}", e);
-                            (None, None)
-                        }
-                    }
-                } else {
-                    // CPU mode: pool of models for thread-parallel inference
-                    let num_workers = std::thread::available_parallelism()
-                        .map(|n| n.get().min(MAX_EMBEDDING_WORKERS))
-                        .unwrap_or(2);
-
-                    match EmbeddingPool::new(&model_path, num_workers, false) {
-                        Ok(pool) => {
-                            println!("Using CPU backend with {} parallel workers", pool.len());
-                            (Some(Arc::new(EmbeddingBackend::Cpu(pool))), model_id)
-                        }
-                        Err(e) => {
-                            eprintln!("Failed to load CPU embedding model pool: {}", e);
-                            (None, None)
-                        }
+                let (embedding_backend, model_id) = match EmbeddingBackend::load(&model_path) {
+                    Ok(backend) => (Some(Arc::new(backend)), model_id),
+                    Err(e) => {
+                        eprintln!("Failed to load embedding backend: {}", e);
+                        (None, None)
                     }
                 };
 
