@@ -6,6 +6,7 @@ use tauri::Wry;
 use crate::config::AppConfig;
 
 pub fn build_menu(app: &mut tauri::App, config: &AppConfig) -> Result<Menu<Wry>, Box<dyn std::error::Error>> {
+    // TODO: Give frequently-used menu buttons functioning commands.
     // ── macOS app menu ──────────────────────────────────────────────────────
     #[cfg(target_os = "macos")]
     let app_menu = SubmenuBuilder::new(app, app.package_info().name.as_str())
@@ -21,8 +22,8 @@ pub fn build_menu(app: &mut tauri::App, config: &AppConfig) -> Result<Menu<Wry>,
     // ── File menu ───────────────────────────────────────────────────────────
     let file_menu = {
         let b = SubmenuBuilder::new(app, "&File")
-            .item(&MenuItemBuilder::new("&Add Folder...").id("add_folder").accelerator("CmdOrCtrl+O").build(app)?)
-            .item(&MenuItemBuilder::new("&Rescan All").id("rescan").accelerator("CmdOrCtrl+R").build(app)?)
+            .item(&MenuItemBuilder::new("&Add Folder...").id("add_folder").build(app)?)
+            .item(&MenuItemBuilder::new("&Rescan All").id("rescan").build(app)?)
             .item(&MenuItemBuilder::new("&Manage Folders...").id("manage_folders").build(app)?)
             .separator()
             .item(&MenuItemBuilder::new("&Open App Data Folder").id("view_files").build(app)?)
