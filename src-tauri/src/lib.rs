@@ -589,6 +589,7 @@ async fn open_popup(
     title: String,
     width: f64,
     height: f64,
+    resizable: bool,
 ) -> Result<(), String> {
     let label = format!("popup-{}", route.trim_start_matches('/').replace('/', "-"));
 
@@ -600,7 +601,9 @@ async fn open_popup(
     let window = tauri::WebviewWindowBuilder::new(&app, &label, tauri::WebviewUrl::App(route.into()))
         .title(title)
         .inner_size(width, height)
-        .resizable(true)
+        .resizable(resizable)
+        .minimizable(resizable)
+        .maximizable(resizable)
         .center()
         .build()
         .map_err(|e| e.to_string())?;

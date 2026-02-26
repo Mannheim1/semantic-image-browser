@@ -250,11 +250,11 @@
   }
 
   function showAbout() {
-    invoke("open_popup", { route: "/about", title: "About", width: 500, height: 400 });
+    invoke("open_popup", { route: "/about", title: "About", width: 500, height: 400, resizable: false });
   }
 
   function showViewControls() {
-    invoke("open_popup", { route: "/view-controls", title: "View Controls", width: 460, height: 300 });
+    invoke("open_popup", { route: "/view-controls", title: "View Controls", width: 460, height: 300, resizable: false });
   }
 
   async function showDependencyPaths() {
@@ -432,7 +432,7 @@
         openAppDataFolder();
         break;
       case "manage_folders":
-        invoke("open_popup", { route: "/manage-folders", title: "Manage Folders", width: 550, height: 400 });
+        invoke("open_popup", { route: "/manage-folders", title: "Manage Folders", width: 550, height: 400, resizable: true });
         break;
       case "clear_thumbnails":
         deleteAllThumbnails();
