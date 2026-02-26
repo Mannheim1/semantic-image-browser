@@ -1,8 +1,8 @@
 <script lang="ts">
+  import "$lib/theme.css";
   import { invoke } from "@tauri-apps/api/core";
   import { convertFileSrc } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
-  import { getVersion } from "@tauri-apps/api/app";
   import { getCurrentWebview } from "@tauri-apps/api/webview";
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { open, message } from "@tauri-apps/plugin-dialog";
@@ -38,8 +38,6 @@
   let isScanning = $state(false);
   let watchedDirectories = $state<string[]>([]);
   let indexedCount = $state(0);
-  let appVersion = $state("");
-  let buildVariant = $state("");
   let embeddingModelLoaded = $state(false);
   let modelLoading = $state(true);
   let lastScanDurationMs = $state<number | null>(null);
@@ -65,11 +63,10 @@
   let gridContainerEl: HTMLElement | null = null;
   let imageCellEls = $state<(HTMLButtonElement | null)[]>([]);
 
-  let showFoldersModal = $state(false);
   let ocrLexical = $state(false);
   let ocrSemantic = $state(false);
-  let showAboutModal = $state(false);
-  let showViewControlsModal = $state(false);
+
+
   let zoomLevel = $state(1);
 
   // Sort state
@@ -170,8 +167,6 @@
   }
 
   async function loadInitialData() {
-    appVersion = await getVersion();
-    buildVariant = await invoke("get_build_variant");
     watchedDirectories = await invoke("get_watched_directories");
     indexedCount = await invoke("get_indexed_count");
     // Only update embeddingModelLoaded if we're not in the initial loading phase
@@ -247,6 +242,14 @@
 
   async function openAppDataFolder() {
     await invoke("open_app_data_folder");
+  }
+
+  function showAbout() {
+    invoke("open_popup", { route: "/about", title: "About", width: 500, height: 400 });
+  }
+
+  function showViewControls() {
+    invoke("open_popup", { route: "/view-controls", title: "View Controls", width: 460, height: 300 });
   }
 
   async function showDependencyPaths() {
@@ -391,10 +394,15 @@
       embeddingModelLoaded = await invoke("get_embedding_model_status");
     });
 
+    const unlistenDirsChangedPromise = listen<void>("directories-changed", () => {
+      loadInitialData();
+    });
+
     return () => {
       unlistenScanPromise.then((unlisten) => unlisten());
       unlistenMenuPromise.then((unlisten) => unlisten());
       unlistenModelReadyPromise.then((unlisten) => unlisten());
+      unlistenDirsChangedPromise.then((unlisten) => unlisten());
     };
   });
 
@@ -410,7 +418,7 @@
         openAppDataFolder();
         break;
       case "manage_folders":
-        showFoldersModal = true;
+        invoke("open_popup", { route: "/manage-folders", title: "Manage Folders", width: 550, height: 400 });
         break;
       case "clear_thumbnails":
         deleteAllThumbnails();
@@ -469,10 +477,10 @@
         testBundleUrls();
         break;
       case "about":
-        showAboutModal = true;
+        showAbout();
         break;
       case "view_controls":
-        showViewControlsModal = true;
+        showViewControls();
         break;
       case "zoom_in":
         zoomLevel = Math.min(3, zoomLevel + 0.1);
@@ -605,116 +613,9 @@
     </div>
   {/if}
 
-  {#if showFoldersModal}
-    <div class="modal-overlay" role="presentation" onclick={() => showFoldersModal = false}>
-      <div class="modal" onclick={(e) => e.stopPropagation()}>
-        <div class="modal-header">
-          <span>Manage Folders</span>
-          <button class="modal-close" onclick={() => showFoldersModal = false}>×</button>
-        </div>
-        <div class="modal-body">
-          {#if watchedDirectories.length === 0}
-            <div class="folders-empty">No folders added yet.</div>
-          {:else}
-            <div class="folders-list">
-              {#each watchedDirectories as dir}
-                <div class="folder-item">
-                  <span class="folder-path" title={dir}>{dir}</span>
-                  <button class="folder-remove" onclick={() => removeDirectory(dir)}>×</button>
-                </div>
-              {/each}
-            </div>
-          {/if}
-        </div>
-      </div>
-    </div>
-  {/if}
-
-  {#if showAboutModal}
-    <div class="modal-overlay" role="presentation" onclick={() => showAboutModal = false}>
-      <div class="modal" onclick={(e) => e.stopPropagation()}>
-        <div class="modal-header">
-          <span>About</span>
-          <button class="modal-close" onclick={() => showAboutModal = false}>×</button>
-        </div>
-        <div class="modal-body">
-          <p class="about-version">Version {appVersion} — {buildVariant}</p>
-          <p class="text">
-            Semantic Image Search helps you find images using natural-language queries by indexing local folders,
-            generating thumbnails, and ranking results with visual embeddings. The app is built with Tauri v2 and
-            a Svelte + TypeScript frontend, with a Rust backend that uses LanceDB for vector search, ONNX Runtime
-            for model inference, and Tesseract for OCR.
-          </p>
-          {#if buildVariant.includes("CUDA")}
-            <p class="text">This software includes NVIDIA CUDA and cuDNN libraries. NVIDIA, CUDA, and cuDNN are trademarks of NVIDIA Corporation.</p>
-          {/if}
-        </div>
-      </div>
-    </div>
-  {/if}
-
-  {#if showViewControlsModal}
-    <div class="modal-overlay" role="presentation" onclick={() => showViewControlsModal = false}>
-      <div class="modal" onclick={(e) => e.stopPropagation()}>
-        <div class="modal-header">
-          <span>View Controls</span>
-          <button class="modal-close" onclick={() => showViewControlsModal = false}>×</button>
-        </div>
-        <div class="modal-body">
-          <div class="text">
-            <div>Click a thumbnail to open the detail side panel.</div>
-            <div>Double-click a thumbnail to open the image in your default viewer.</div>
-            <div>Right-click a thumbnail to open the context menu.</div>
-            <div>With the panel open, use Left/Right arrow keys to move to the previous or next image.</div>
-          </div>
-        </div>
-      </div>
-    </div>
-  {/if}
 </div>
 
 <style>
-  :root {
-    --bg-base: #1a1412;
-    --bg-toolbar: #2a2220;
-    --bg-hover: #3a3230;
-    --text-primary: #e0d6d0;
-    --text-secondary: #a09590;
-    --border-color: #3a3230;
-    --source-visual: #1a1412;
-    --source-ocr-lexical: #1a2e1a;
-    --source-ocr-semantic: #1a1a2e;
-    --scrollbar-thumb: #6a615c;
-    --scrollbar-thumb-hover: #8a7c6a;
-  }
-
-  :global(body) {
-    margin: 0;
-    padding: 0;
-    background: var(--bg-base);
-    color: var(--text-primary);
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-    font-size: 14px;
-    overflow: hidden;
-  }
-
-  :global(*) {
-    scrollbar-color: var(--scrollbar-thumb) var(--bg-base);
-  }
-
-  :global(*::-webkit-scrollbar-track) {
-    background: var(--bg-base);
-  }
-
-  :global(*::-webkit-scrollbar-thumb) {
-    background: var(--scrollbar-thumb);
-    border-radius: 8px;
-  }
-
-  :global(*::-webkit-scrollbar-thumb:hover) {
-    background: var(--scrollbar-thumb-hover);
-  }
-
   .app {
     display: flex;
     flex-direction: column;
@@ -1017,117 +918,6 @@
   .meta-row span:last-child {
     color: var(--text-primary);
     word-break: break-all;
-  }
-
-  .modal-overlay {
-    position: fixed;
-    top: 0;
-    left: 0;
-    right: 0;
-    bottom: 0;
-    background: rgba(0, 0, 0, 0.6);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    z-index: 300;
-  }
-
-  .modal {
-    background: var(--bg-toolbar);
-    border: 1px solid var(--border-color);
-    border-radius: 8px;
-    width: 500px;
-    max-width: 90vw;
-    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
-  }
-
-  .modal-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: 12px 16px;
-    border-bottom: 1px solid var(--border-color);
-    font-weight: 500;
-  }
-
-  .modal-close {
-    background: none;
-    border: none;
-    color: var(--text-secondary);
-    font-size: 20px;
-    cursor: pointer;
-    padding: 0 4px;
-  }
-
-  .modal-close:hover {
-    color: var(--text-primary);
-  }
-
-  .modal-body {
-    padding: 16px;
-    display: flex;
-    flex-direction: column;
-    gap: 12px;
-  }
-
-  .about-version {
-    font-size: 13px;
-    color: var(--text-secondary);
-    margin: 0;
-  }
-
-  /* Folders Modal Styles */
-  .folders-empty {
-    color: var(--text-secondary);
-    font-style: italic;
-    text-align: center;
-    padding: 20px;
-  }
-
-  .folders-list {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-  }
-
-  .folder-item {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 8px 12px;
-    background: var(--bg-base);
-    border: 1px solid var(--border-color);
-    border-radius: 4px;
-  }
-
-  .folder-path {
-    flex: 1;
-    font-size: 13px;
-    font-family: monospace;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .folder-remove {
-    background: none;
-    border: none;
-    color: var(--text-secondary);
-    cursor: pointer;
-    font-size: 18px;
-    padding: 0 4px;
-    line-height: 1;
-  }
-
-  .folder-remove:hover {
-    color: #ff6b6b;
-  }
-
-  .text {
-    margin: 0;
-    color: var(--text-secondary);
-    line-height: 1.5;
-    font-size: 13px;
   }
 
 </style>

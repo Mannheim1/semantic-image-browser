@@ -580,6 +580,36 @@ fn toggle_benchmarking() -> bool {
     new_value
 }
 
+/// Open a popup window at the given frontend route.
+/// If a window for that route already exists, focus it instead.
+#[tauri::command]
+async fn open_popup(
+    app: AppHandle,
+    route: String,
+    title: String,
+    width: f64,
+    height: f64,
+) -> Result<(), String> {
+    let label = format!("popup-{}", route.trim_start_matches('/').replace('/', "-"));
+
+    if let Some(window) = app.get_webview_window(&label) {
+        window.set_focus().map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+
+    let window = tauri::WebviewWindowBuilder::new(&app, &label, tauri::WebviewUrl::App(route.into()))
+        .title(title)
+        .inner_size(width, height)
+        .resizable(true)
+        .center()
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    let _ = window.remove_menu();
+
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -693,8 +723,20 @@ pub fn run() {
             toggle_benchmarking,
             get_build_variant,
             get_dependency_paths,
-            test_bundle_urls
+            test_bundle_urls,
+            open_popup
         ])
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::Destroyed = event {
+                if window.label() == "main" {
+                    for (label, win) in window.app_handle().webview_windows() {
+                        if label.starts_with("popup-") {
+                            let _ = win.close();
+                        }
+                    }
+                }
+            }
+        })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
