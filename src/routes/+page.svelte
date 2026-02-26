@@ -606,7 +606,6 @@
   {/if}
 
   {#if showFoldersModal}
-    <!-- svelte-ignore a11y_click_events_have_key_events -->
     <div class="modal-overlay" role="presentation" onclick={() => showFoldersModal = false}>
       <div class="modal" onclick={(e) => e.stopPropagation()}>
         <div class="modal-header">
@@ -632,7 +631,6 @@
   {/if}
 
   {#if showAboutModal}
-    <!-- svelte-ignore a11y_click_events_have_key_events -->
     <div class="modal-overlay" role="presentation" onclick={() => showAboutModal = false}>
       <div class="modal" onclick={(e) => e.stopPropagation()}>
         <div class="modal-header">
@@ -656,7 +654,6 @@
   {/if}
 
   {#if showViewControlsModal}
-    <!-- svelte-ignore a11y_click_events_have_key_events -->
     <div class="modal-overlay" role="presentation" onclick={() => showViewControlsModal = false}>
       <div class="modal" onclick={(e) => e.stopPropagation()}>
         <div class="modal-header">
