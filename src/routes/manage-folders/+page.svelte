@@ -1,12 +1,13 @@
 <script lang="ts">
   import "$lib/theme.css";
   import { invoke } from "@tauri-apps/api/core";
-  import { emit } from "@tauri-apps/api/event";
+  import { emit, listen } from "@tauri-apps/api/event";
   import { open } from "@tauri-apps/plugin-dialog";
   import { onMount } from "svelte";
 
   let watchedDirectories = $state<string[]>([]);
   let isScanning = $state(false);
+  let skipNextDirsChanged = false;
 
   async function loadDirectories() {
     watchedDirectories = await invoke("get_watched_directories");
@@ -26,6 +27,7 @@
       }
       isScanning = false;
       await loadDirectories();
+      skipNextDirsChanged = true;
       await emit("directories-changed");
     }
   }
@@ -35,11 +37,24 @@
     await invoke("remove_watched_directory", { path });
     isScanning = false;
     await loadDirectories();
+    skipNextDirsChanged = true;
     await emit("directories-changed");
   }
 
   onMount(() => {
     loadDirectories();
+
+    const unlistenDirsChanged = listen<void>("directories-changed", () => {
+      if (skipNextDirsChanged) {
+        skipNextDirsChanged = false;
+        return;
+      }
+      loadDirectories();
+    });
+
+    return () => {
+      unlistenDirsChanged.then((unlisten) => unlisten());
+    };
   });
 </script>
 

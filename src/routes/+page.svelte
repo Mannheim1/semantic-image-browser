@@ -2,7 +2,7 @@
   import "$lib/theme.css";
   import { invoke } from "@tauri-apps/api/core";
   import { convertFileSrc } from "@tauri-apps/api/core";
-  import { listen } from "@tauri-apps/api/event";
+  import { emit, listen } from "@tauri-apps/api/event";
   import { getCurrentWebview } from "@tauri-apps/api/webview";
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { open, message } from "@tauri-apps/plugin-dialog";
@@ -65,6 +65,7 @@
 
   let ocrLexical = $state(false);
   let ocrSemantic = $state(false);
+  let skipNextDirsChanged = false;
 
 
   let zoomLevel = $state(1);
@@ -201,6 +202,8 @@
       console.log(`Scan completed in ${formatDuration(lastScanDurationMs)}`);
       endScan();
       await loadInitialData();
+      skipNextDirsChanged = true;
+      emit("directories-changed");
     }
   }
 
@@ -209,6 +212,8 @@
     await invoke("remove_watched_directory", { path });
     endScan();
     await loadInitialData();
+    skipNextDirsChanged = true;
+    emit("directories-changed");
   }
 
   async function rescanAll() {
@@ -383,6 +388,10 @@
   onMount(() => {
     const unlistenScanPromise = listen<ScanProgressPayload>("scan_progress", (event) => {
       scanProgress = event.payload;
+      if (!isScanning) {
+        scanOperation = event.payload.phase === "scan" ? "removing" : "adding";
+        isScanning = true;
+      }
     });
 
     const unlistenMenuPromise = listen<string>("menu-event", (event) => {
@@ -395,6 +404,11 @@
     });
 
     const unlistenDirsChangedPromise = listen<void>("directories-changed", () => {
+      if (skipNextDirsChanged) {
+        skipNextDirsChanged = false;
+        return;
+      }
+      endScan();
       loadInitialData();
     });
 
