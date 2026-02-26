@@ -14,46 +14,76 @@
 </script>
 
 <div class="about">
-  <h1>Semantic Image Browser</h1>
-  <p class="version">Version {appVersion} — {buildVariant}</p>
-  <p>
-    Semantic Image Search helps you find images using natural-language queries by indexing local
-    folders, generating thumbnails, and ranking results with visual embeddings. The app is built
-    with Tauri v2 and a Svelte + TypeScript frontend, with a Rust backend that uses LanceDB for
-    vector search, ONNX Runtime for model inference, and Tesseract for OCR.
+  <img class="app-icon" src="/app-icon.png" alt="Semantic Image Browser icon" />
+  <h1 class="title">Semantic Image Browser</h1>
+  <p class="version">
+    {appVersion} for {buildVariant}
+    (<a href="https://github.com/Mannheim1/semantic-image-browser/releases" target="_blank" rel="noreferrer">release notes</a>)
   </p>
-  {#if buildVariant.includes("CUDA")}
-    <p class="legal">
-      This software includes NVIDIA CUDA and cuDNN libraries. NVIDIA, CUDA, and cuDNN are
-      trademarks of NVIDIA Corporation.
-    </p>
-  {/if}
+  <p class="meta">
+    {#if buildVariant.includes("CUDA")}
+      Includes NVIDIA CUDA and cuDNN libraries
+    {:else}
+      Does not include NVIDIA CUDA or cuDNN libraries
+    {/if}
+  </p>
+  <p class="meta">
+    Licensed under
+    <a href="https://github.com/Mannheim1/semantic-image-browser/blob/main/LICENSE" target="_blank" rel="noreferrer">GPT-3.0-only</a>
+  </p>
 </div>
 
 <style>
   .about {
     padding: 24px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    text-align: center;
+    gap: 10px;
   }
 
-  h1 {
+  .app-icon {
+    width: 64px;
+    height: 64px;
+    border-radius: 12px;
+    margin-bottom: 4px;
+  }
+
+  .title {
+    color: var(--text-primary);
     font-size: 18px;
-    margin: 0 0 8px 0;
+    margin: 0;
   }
 
   .version {
-    color: var(--text-secondary);
-    font-size: 13px;
-    margin: 0 0 16px 0;
+    color: var(--text-primary);
+    font-size: 14px;
+    margin: 0;
   }
 
-  p {
-    line-height: 1.5;
-    font-size: 13px;
-    color: var(--text-secondary);
+  .version a {
+    color: var(--accent, #3b82f6);
+    text-decoration: none;
   }
 
-  .legal {
-    font-size: 12px;
-    margin-top: 16px;
+  .version a:hover {
+    text-decoration: underline;
+  }
+
+  .meta a {
+    color: var(--accent, #3b82f6);
+    text-decoration: none;
+  }
+
+  .meta a:hover {
+    text-decoration: underline;
+  }
+
+  .meta {
+    font-size: 13px;
+    color: var(--text-secondary);
+    margin: 0;
+    line-height: 1.4;
   }
 </style>
