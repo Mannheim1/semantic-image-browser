@@ -1,48 +1,26 @@
 # semantic-image-browser
 
-Search your images with natural language — fully local, no setup required.
+<img src="src-tauri/icons/icon.png" alt="semantic-image-browser icon" width="64" />
 
-![Screenshot](screenshot.png)
-
----
-
-## Features
-
-- **Natural language search** — type "dog on a beach" or "blueprint diagram" and find matching images by meaning, not filename
-- **Image similarity search** — right-click any image to find visually similar ones
-- **Fully local and private** — no account, no API key, no internet connection required; nothing leaves your machine
-- **Zero setup** — SigLIP2 model and ONNX Runtime are bundled in the installer
-
----
+This is a desktop app for Windows and Mac that allows you to search your images with natural language queries. It uses SigLIP 2, a vision-language encoding model by Google DeepMind. No setup or internet connection is required.
 
 ## Installation
 
-Download the installer for your platform from the [releases page](https://github.com/Mannheim1/semantic-image-browser/releases).
+Download and run the installer for your platform from the [releases page](https://github.com/Mannheim1/semantic-image-browser/releases). The CUDA variant requires an NVIDIA GPU with CUDA 12 support.
 
-| Platform | Variant | Notes |
-|---|---|---|
-| Windows x64 | CPU | |
-| Windows x64 | CUDA | Requires NVIDIA GPU with CUDA 12 support |
-| macOS ARM64 | CPU | |
-| Linux x64 | CPU | |
-| Linux x64 | CUDA | Requires NVIDIA GPU with CUDA 12 support |
-
-Use the CPU build if you don't have an NVIDIA GPU. The CUDA build is otherwise identical but indexes images much faster.
-
-**To uninstall:** use your system's standard uninstall mechanism. App data (index, thumbnails, config) is stored in your local app data folder and can be deleted manually if desired.
-
----
+This app stores its data in `C:\Users\<your-username>\AppData\Local\com.mannheim.semantic-image-browser` on Windows and `~/Library/Application Support/com.mannheim.semantic-image-browser` on Mac. To completely remove this app from your computer, delete these folders after uninstalling semantic-image-browser.
 
 ## Usage
 
-1. Add a folder via **File → Add Folder**
-2. Wait for indexing to complete
-3. Type a query and press Enter
+1. Add a folder by clicking **File → Add Folder**. This adds all images in the folder (excluding subfolders) to semantic-image-browser's database.
+2. Wait for indexing to complete. Large folders may take a while to add.
+3. Type any query in the search bar and the app will show you the images in its database that are closest to the query.
+4. View which folders are in the database by clicking **File → Manage Folders**.
+5. Remove a folder by clicking the X next to the name of the folder you wish to remove.
 
-Double-click an image to open it. Right-click for additional options.
-
----
+Additional usage information can be found by clicking **Help → View Controls**.
 
 ## License
 
 [GPL-3.0-only](LICENSE)
+
