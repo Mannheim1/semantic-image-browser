@@ -80,6 +80,14 @@
 
   // Context menu state
   let contextMenu = $state<{ x: number; y: number; image: ImageInfo } | null>(null);
+  let contextMenuEl = $state<HTMLElement | null>(null);
+  let contextMenuTrigger: HTMLElement | null = null;
+
+  $effect(() => {
+    if (contextMenu && contextMenuEl) {
+      contextMenuEl.querySelector<HTMLElement>('button:not([disabled])')?.focus();
+    }
+  });
 
   // Similar search state - when set, we're showing results similar to this image
   let similarToImage = $state<ImageInfo | null>(null);
@@ -275,7 +283,14 @@
 
   function handleContextMenu(e: MouseEvent, img: ImageInfo) {
     e.preventDefault();
-    contextMenu = { x: e.clientX, y: e.clientY, image: img };
+    contextMenuTrigger = e.currentTarget as HTMLElement;
+    let { clientX: x, clientY: y } = e;
+    if (x === 0 && y === 0) {
+      const rect = contextMenuTrigger.getBoundingClientRect();
+      x = rect.left;
+      y = rect.bottom;
+    }
+    contextMenu = { x, y, image: img };
   }
 
   async function findSimilar(img: ImageInfo) {
@@ -295,6 +310,31 @@
 
   function closeContextMenu() {
     contextMenu = null;
+    contextMenuTrigger?.focus();
+    contextMenuTrigger = null;
+  }
+
+  function handleContextMenuKeydown(e: KeyboardEvent) {
+    if (!contextMenuEl) return;
+    const items = Array.from(contextMenuEl.querySelectorAll<HTMLElement>('button:not([disabled])'));
+    const index = items.indexOf(document.activeElement as HTMLElement);
+
+    if (e.key === 'Escape') {
+      e.stopPropagation();
+      closeContextMenu();
+    } else if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      e.stopPropagation();
+      items[(index + 1) % items.length]?.focus();
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      e.stopPropagation();
+      items[(index - 1 + items.length) % items.length]?.focus();
+    } else if (e.key === 'Tab') {
+      closeContextMenu();
+    } else {
+      e.stopPropagation();
+    }
   }
 
   async function openPanelAtIndex(index: number) {
@@ -582,7 +622,20 @@
     </main>
 
     {#if isPanelOpen && selectedImage}
-      <div class="panel-resizer" role="separator" onmousedown={handlePanelResizeStart}></div>
+      <div
+        class="panel-resizer"
+        role="slider"
+        aria-label="Panel width"
+        aria-valuenow={panelWidthPct ?? 50}
+        aria-valuemin={20}
+        aria-valuemax={80}
+        tabindex="0"
+        onmousedown={handlePanelResizeStart}
+        onkeydown={(e) => {
+          if (e.key === 'ArrowLeft') panelWidthPct = Math.min(80, (panelWidthPct ?? 50) + 5);
+          else if (e.key === 'ArrowRight') panelWidthPct = Math.max(20, (panelWidthPct ?? 50) - 5);
+        }}
+      ></div>
       <aside class="image-panel" style="width: {panelWidthPct ?? 50}%;">
         <div class="panel-header">
           <div class="panel-title" title={selectedImage.path}>{getFilename(selectedImage.path)}</div>
@@ -610,13 +663,18 @@
   {#if contextMenu}
     <div
       class="context-menu"
+      role="menu"
+      tabindex="-1"
       style="left: {contextMenu.x}px; top: {contextMenu.y}px;"
+      bind:this={contextMenuEl}
       onclick={(e) => e.stopPropagation()}
+      onkeydown={handleContextMenuKeydown}
     >
-      <button class="context-item" onclick={() => { showInFolder(contextMenu!.image.path); closeContextMenu(); }}>
+      <button role="menuitem" class="context-item" onclick={() => { showInFolder(contextMenu!.image.path); closeContextMenu(); }}>
         Show in folder
       </button>
       <button
+        role="menuitem"
         class="context-item"
         class:disabled={!embeddingModelLoaded}
         disabled={!embeddingModelLoaded}
