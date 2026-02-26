@@ -20,16 +20,14 @@
     {appVersion} for {buildVariant}
     (<a href="https://github.com/Mannheim1/semantic-image-browser/releases" target="_blank" rel="noreferrer">release notes</a>)
   </p>
-  <p class="meta">
-    {#if buildVariant.includes("CUDA")}
-      Includes NVIDIA CUDA and cuDNN libraries
-    {:else}
-      Does not include NVIDIA CUDA or cuDNN libraries
-    {/if}
-  </p>
+
+  {#if buildVariant.includes("CUDA")}
+    <p class="meta">Includes NVIDIA CUDA and cuDNN libraries</p>
+  {/if}
+
   <p class="meta">
     Licensed under
-    <a href="https://github.com/Mannheim1/semantic-image-browser/blob/main/LICENSE" target="_blank" rel="noreferrer">GPT-3.0-only</a>
+    <a href="https://github.com/Mannheim1/semantic-image-browser/blob/main/LICENSE" target="_blank" rel="noreferrer">GPL-3.0-only</a>
   </p>
 </div>
 
@@ -62,21 +60,12 @@
     margin: 0;
   }
 
-  .version a {
+  .about a {
     color: var(--accent, #3b82f6);
     text-decoration: none;
   }
 
-  .version a:hover {
-    text-decoration: underline;
-  }
-
-  .meta a {
-    color: var(--accent, #3b82f6);
-    text-decoration: none;
-  }
-
-  .meta a:hover {
+  .about a:hover {
     text-decoration: underline;
   }
 
