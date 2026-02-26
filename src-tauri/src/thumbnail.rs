@@ -70,6 +70,11 @@ pub fn generate_thumbnail_from_rgb(
     let encoder = webp::Encoder::from_rgb(&resized_rgb, target_width, target_height);
     let webp_data = encoder.encode(WEBP_QUALITY);
 
+    if let Some(parent) = thumb_path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|e| format!("Failed to create thumbnail directory '{}': {}", parent.display(), e))?;
+    }
+
     // Write to disk
     fs::write(thumb_path, &*webp_data)
         .map_err(|e| format!("Failed to write thumbnail '{}': {}", thumb_path.display(), e))?;
