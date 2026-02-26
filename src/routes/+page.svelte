@@ -347,6 +347,7 @@
     isPanelOpen = true;
     await tick();
     imageCellEls[index]?.scrollIntoView({ block: "center", inline: "nearest" });
+    imageCellEls[index]?.focus();
   }
 
   function closePanel() {
@@ -603,6 +604,7 @@
               class="image-cell"
               class:selected={selectedImage?.path === img.path}
               onclick={() => handleImageClick(index)}
+              onfocus={() => { if (isPanelOpen) openPanelAtIndex(index); }}
               ondblclick={() => handleImageDblClick(img)}
               oncontextmenu={(e) => handleContextMenu(e, img)}
               bind:this={imageCellEls[index]}
