@@ -37,18 +37,33 @@ pub fn build_menu(app: &mut tauri::App, config: &AppConfig) -> Result<Menu<Wry>,
     };
 
     // ── View menu ───────────────────────────────────────────────────────────
+    #[cfg(target_os = "macos")]
+    let toggle_fullscreen_label = "Toggle Fullscreen";
+    #[cfg(not(target_os = "macos"))]
+    let toggle_fullscreen_label = "Toggle &Fullscreen";
+
     let view_menu = SubmenuBuilder::new(app, "&View")
         .item(&MenuItemBuilder::new("Zoom &In").id("zoom_in").accelerator("CmdOrCtrl+=").build(app)?)
         .item(&MenuItemBuilder::new("Zoom &Out").id("zoom_out").accelerator("CmdOrCtrl+-").build(app)?)
         .item(&MenuItemBuilder::new("&Reset Zoom").id("reset_zoom").accelerator("CmdOrCtrl+0").build(app)?)
         .separator()
-        .item(&MenuItemBuilder::new("Toggle &Fullscreen").id("toggle_fullscreen").accelerator("F11").build(app)?)
+        .item(&MenuItemBuilder::new(toggle_fullscreen_label).id("toggle_fullscreen").accelerator("F11").build(app)?)
         .build()?;
 
     // ── Search menu ─────────────────────────────────────────────────────────
+    #[cfg(target_os = "macos")]
+    let lexical_ocr_label = "Lexical OCR";
+    #[cfg(not(target_os = "macos"))]
+    let lexical_ocr_label = "&Lexical OCR";
+
+    #[cfg(target_os = "macos")]
+    let semantic_ocr_label = "Semantic OCR";
+    #[cfg(not(target_os = "macos"))]
+    let semantic_ocr_label = "&Semantic OCR";
+
     let search_menu = SubmenuBuilder::new(app, "&Search")
-        .item(&CheckMenuItemBuilder::new("&Lexical OCR").id("ocr_lexical").build(app)?)
-        .item(&CheckMenuItemBuilder::new("&Semantic OCR").id("ocr_semantic").build(app)?)
+        .item(&CheckMenuItemBuilder::new(lexical_ocr_label).id("ocr_lexical").build(app)?)
+        .item(&CheckMenuItemBuilder::new(semantic_ocr_label).id("ocr_semantic").build(app)?)
         .separator()
         .item(&SubmenuBuilder::new(app, "Sort &by...")
             .item(&MenuItemBuilder::new("&Relevance").id("sort_relevance").build(app)?)
@@ -83,10 +98,15 @@ pub fn build_menu(app: &mut tauri::App, config: &AppConfig) -> Result<Menu<Wry>,
 
     // ── Debug menu ──────────────────────────────────────────────────────────
     let menu = if config.debug_mode {
+        #[cfg(target_os = "macos")]
+        let benchmarking_label = "Benchmarking";
+        #[cfg(not(target_os = "macos"))]
+        let benchmarking_label = "&Benchmarking";
+
         let debug_menu = SubmenuBuilder::new(app, "&Debug")
             .item(&MenuItemBuilder::new("Debug mode enabled").id("debug_mode_enabled").enabled(false).build(app)?)
             .separator()
-            .item(&CheckMenuItemBuilder::new("&Benchmarking").id("toggle_benchmarking").checked(false).build(app)?)
+            .item(&CheckMenuItemBuilder::new(benchmarking_label).id("toggle_benchmarking").checked(false).build(app)?)
             .separator()
             .item(&MenuItemBuilder::new("&Dependency Paths").id("show_dependency_paths").build(app)?)
             .item(&MenuItemBuilder::new("&Test Bundle URLs").id("test_bundle_urls").build(app)?)
