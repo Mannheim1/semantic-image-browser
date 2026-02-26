@@ -423,11 +423,10 @@ fn get_build_variant() -> String {
     format!("{} {}{}", os, arch, accel)
 }
 
-/// Show resolved paths for all dependencies.
+/// Show resolved paths for bundled dependencies.
 ///
-/// Checks bundled resources first (where release builds place everything),
-/// then falls back to searching the system PATH for CUDA DLLs (for local dev
-/// where the NVIDIA toolkit is installed separately).
+/// Reports the backend feature, ONNX Runtime library, model files,
+/// and any backend-specific provider libraries.
 #[tauri::command]
 fn get_dependency_paths(app: AppHandle) -> Vec<(String, String)> {
     let bundled = bundled_dir(&app);
@@ -443,12 +442,13 @@ fn get_dependency_paths(app: AppHandle) -> Vec<(String, String)> {
     };
 
     /// Check for a library in the bundled lib dir first, then search PATH.
+    /// Only used by backends that require extra provider DLLs (e.g. CUDA).
+    #[allow(dead_code)]
     fn find_lib(lib_dir: &Path, filename: &str) -> String {
         let bundled_path = lib_dir.join(filename);
         if bundled_path.exists() {
             return bundled_path.display().to_string();
         }
-        // Fall back to searching system PATH
         let path_var = std::env::var("PATH").unwrap_or_default();
         let sep = if cfg!(target_os = "windows") { ';' } else { ':' };
         for dir in path_var.split(sep) {
@@ -460,44 +460,54 @@ fn get_dependency_paths(app: AppHandle) -> Vec<(String, String)> {
         format!("{} (NOT FOUND)", bundled_path.display())
     }
 
+    let backend_name = if cfg!(feature = "backend-cuda") {
+        "CUDA"
+    } else {
+        "CPU"
+    };
+
     let mut deps = vec![
+        ("Backend".into(), backend_name.into()),
         // ONNX Runtime
         ("ONNX Runtime".into(), status(&lib_dir.join(ort_lib_filename()))),
-        ("ORT CUDA Provider".into(), find_lib(&lib_dir, if cfg!(target_os = "windows") { "onnxruntime_providers_cuda.dll" } else { "libonnxruntime_providers_cuda.so" })),
-        ("ORT Shared Provider".into(), find_lib(&lib_dir, if cfg!(target_os = "windows") { "onnxruntime_providers_shared.dll" } else { "libonnxruntime_providers_shared.so" })),
-        // Model
-        ("Model directory".into(), status(&model_path)),
-        ("  vision_model.onnx".into(), status(&model_path.join("onnx").join("vision_model.onnx"))),
-        ("  text_model.onnx".into(), status(&model_path.join("onnx").join("text_model.onnx"))),
-        ("  tokenizer.json".into(), status(&model_path.join("tokenizer.json"))),
     ];
 
-    // CUDA DLLs — needed for CUDA builds
-    if cfg!(target_os = "windows") {
-        let cuda_libs = [
-            ("CUDA Runtime", "cudart64_12.dll"),
-            ("cuBLAS", "cublas64_12.dll"),
-            ("cuBLAS Lt", "cublasLt64_12.dll"),
-            ("cuDNN", "cudnn64_9.dll"),
-            ("cuDNN Ops", "cudnn_ops64_9.dll"),
-            ("cuDNN CNN", "cudnn_cnn64_9.dll"),
-        ];
-        for (label, dll) in cuda_libs {
-            deps.push((label.into(), find_lib(&lib_dir, dll)));
-        }
-    } else if cfg!(target_os = "linux") {
-        let cuda_libs = [
-            ("CUDA Runtime", "libcudart.so.12"),
-            ("cuBLAS", "libcublas.so.12"),
-            ("cuBLAS Lt", "libcublasLt.so.12"),
-            ("cuDNN", "libcudnn.so.9"),
-            ("cuDNN Ops", "libcudnn_ops.so.9"),
-            ("cuDNN CNN", "libcudnn_cnn.so.9"),
-        ];
-        for (label, so) in cuda_libs {
-            deps.push((label.into(), find_lib(&lib_dir, so)));
+    // Backend-specific provider libraries
+    #[cfg(feature = "backend-cuda")]
+    {
+        deps.push(("ORT CUDA Provider".into(), find_lib(&lib_dir, if cfg!(target_os = "windows") { "onnxruntime_providers_cuda.dll" } else { "libonnxruntime_providers_cuda.so" })));
+        deps.push(("ORT Shared Provider".into(), find_lib(&lib_dir, if cfg!(target_os = "windows") { "onnxruntime_providers_shared.dll" } else { "libonnxruntime_providers_shared.so" })));
+
+        if cfg!(target_os = "windows") {
+            for (label, dll) in [
+                ("CUDA Runtime", "cudart64_12.dll"),
+                ("cuBLAS", "cublas64_12.dll"),
+                ("cuBLAS Lt", "cublasLt64_12.dll"),
+                ("cuDNN", "cudnn64_9.dll"),
+                ("cuDNN Ops", "cudnn_ops64_9.dll"),
+                ("cuDNN CNN", "cudnn_cnn64_9.dll"),
+            ] {
+                deps.push((label.into(), find_lib(&lib_dir, dll)));
+            }
+        } else if cfg!(target_os = "linux") {
+            for (label, so) in [
+                ("CUDA Runtime", "libcudart.so.12"),
+                ("cuBLAS", "libcublas.so.12"),
+                ("cuBLAS Lt", "libcublasLt.so.12"),
+                ("cuDNN", "libcudnn.so.9"),
+                ("cuDNN Ops", "libcudnn_ops.so.9"),
+                ("cuDNN CNN", "libcudnn_cnn.so.9"),
+            ] {
+                deps.push((label.into(), find_lib(&lib_dir, so)));
+            }
         }
     }
+
+    // Model files
+    deps.push(("Model directory".into(), status(&model_path)));
+    deps.push(("  vision_model.onnx".into(), status(&model_path.join("onnx").join("vision_model.onnx"))));
+    deps.push(("  text_model.onnx".into(), status(&model_path.join("onnx").join("text_model.onnx"))));
+    deps.push(("  tokenizer.json".into(), status(&model_path.join("tokenizer.json"))));
 
     deps
 }
