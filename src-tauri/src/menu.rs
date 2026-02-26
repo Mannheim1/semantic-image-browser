@@ -42,7 +42,7 @@ pub fn build_menu(app: &mut tauri::App, config: &AppConfig) -> Result<Menu<Wry>,
     #[cfg(not(target_os = "macos"))]
     let toggle_fullscreen_label = "Toggle &Fullscreen";
 
-    let view_menu = SubmenuBuilder::new(app, "&View")
+    let _view_menu = SubmenuBuilder::new(app, "&View")
         .item(&MenuItemBuilder::new("Zoom &In").id("zoom_in").accelerator("CmdOrCtrl+=").build(app)?)
         .item(&MenuItemBuilder::new("Zoom &Out").id("zoom_out").accelerator("CmdOrCtrl+-").build(app)?)
         .item(&MenuItemBuilder::new("&Reset Zoom").id("reset_zoom").accelerator("CmdOrCtrl+0").build(app)?)
@@ -115,24 +115,28 @@ pub fn build_menu(app: &mut tauri::App, config: &AppConfig) -> Result<Menu<Wry>,
 
         #[cfg(target_os = "macos")]
         let m = MenuBuilder::new(app)
-            .items(&[&app_menu, &file_menu, &search_menu, &view_menu, &help_menu, &debug_menu])
+            // TODO: Re-add the View menu and give its buttons real functionality eventually.
+            .items(&[&app_menu, &file_menu, &search_menu, &help_menu, &debug_menu])
             .build()?;
 
         #[cfg(not(target_os = "macos"))]
         let m = MenuBuilder::new(app)
-            .items(&[&file_menu, &search_menu, &view_menu, &help_menu, &debug_menu])
+            // TODO: Re-add the View menu and give its buttons real functionality eventually.
+            .items(&[&file_menu, &search_menu, &help_menu, &debug_menu])
             .build()?;
 
         m
     } else {
         #[cfg(target_os = "macos")]
         let m = MenuBuilder::new(app)
-            .items(&[&app_menu, &file_menu, &search_menu, &view_menu, &help_menu])
+            // TODO: Re-add the View menu and give its buttons real functionality eventually.
+            .items(&[&app_menu, &file_menu, &search_menu, &help_menu])
             .build()?;
 
         #[cfg(not(target_os = "macos"))]
         let m = MenuBuilder::new(app)
-            .items(&[&file_menu, &search_menu, &view_menu, &help_menu])
+            // TODO: Re-add the View menu and give its buttons real functionality eventually.
+            .items(&[&file_menu, &search_menu, &help_menu])
             .build()?;
 
         m
