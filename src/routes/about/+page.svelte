@@ -14,7 +14,7 @@
 </script>
 
 <div class="about">
-  <img class="app-icon" src="/app-icon.png" alt="Semantic Image Browser" />
+  <img class="app-icon" src="/app-icon.png" alt="App logo" />
   <h1 class="title">Semantic Image Browser</h1>
   <p class="version">
     {appVersion} for {buildVariant}
