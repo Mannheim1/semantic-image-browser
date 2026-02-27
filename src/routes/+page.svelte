@@ -106,6 +106,7 @@
 
   // Debounce timer
   let searchTimeout: ReturnType<typeof setTimeout> | null = null;
+  let latestSearchRequestId = 0;
 
   async function loadThumbnails(imagesToLoad: ImageInfo[]) {
     const newThumbnails: Record<string, string | null> = { ...thumbnails };
@@ -143,27 +144,34 @@
   }
 
   async function search(query: string) {
+    const requestId = ++latestSearchRequestId;
     closePanel();
     selectedIndex = null;
     selectedImage = null;
     scrollToIndex(null);
     isLoading = true;
     try {
+      let nextImages: ImageInfo[];
       // Use filtered search if any filters are active, otherwise use simple search
       if (hasActiveFilters) {
-        images = await invoke("search_images_filtered", {
+        nextImages = await invoke("search_images_filtered", {
           query,
           filter: buildFilterOptions(),
           sort: buildSortOptions(),
         });
       } else {
-        images = await invoke("search_images", { query });
+        nextImages = await invoke("search_images", { query });
       }
-      await loadThumbnails(images);
+      if (requestId !== latestSearchRequestId) return;
+      images = nextImages;
+      await loadThumbnails(nextImages);
     } catch (e) {
       console.error("Search failed:", e);
+    } finally {
+      if (requestId === latestSearchRequestId) {
+        isLoading = false;
+      }
     }
-    isLoading = false;
   }
 
   function handleSearchInput(e: Event) {
