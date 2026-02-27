@@ -4,7 +4,7 @@
 //! - Directory traversal to discover image files
 //! - Diffing against the database to find new/modified images
 //! - Decode-once pipeline: shared RGB data feeds both thumbnail generation and embedding
-//! - Orchestration driven by InferenceConfig (thread-parallel or batched)
+//! - Orchestration driven by InferenceConfig (thread-parallel, batched, or multi-consumer pipeline)
 //! - Progress reporting to the frontend via Tauri events
 
 use serde::Serialize;
@@ -286,7 +286,7 @@ pub async fn scan_directory_internal(
         let processing_errors: Vec<String>;
 
         match embedding_backend {
-            Some(backend) if backend.models.len() > 1 => {
+            Some(backend) if !backend.config.pipeline => {
                 // Thread-parallel mode: round-robin images across model instances.
                 // Used for CPU backend where multiple model copies run in parallel.
                 // Each worker thread decodes, generates thumbnail, preprocesses, and runs
@@ -367,12 +367,10 @@ pub async fn scan_directory_internal(
                 processing_errors = errors.into_inner().unwrap();
             }
 
-            Some(backend) => {
-                // Pipeline mode: Rayon producers decode + thumbnail + preprocess in parallel,
-                // send preprocessed tensors through a bounded channel.
-                // Consumer collects batches and runs inference.
-                // Used for single-instance backends (CUDA, CoreML) where the accelerator
-                // handles inference while CPU threads handle preprocessing concurrently.
+            Some(backend) if backend.config.batch_size > 1 => {
+                // Batched pipeline: Rayon producers preprocess in parallel,
+                // single consumer collects batches and runs batched inference.
+                // Used for CUDA where the GPU processes large batches efficiently.
                 use std::sync::mpsc;
 
                 let batch_size = backend.config.batch_size;
@@ -388,7 +386,7 @@ pub async fn scan_directory_internal(
                     }
                 };
 
-                let (tx, rx) = mpsc::sync_channel::<(usize, Result<(Vec<f32>, PreprocessTiming), String>)>((batch_size * 2).max(8));
+                let (tx, rx) = mpsc::sync_channel::<(usize, Result<(Vec<f32>, PreprocessTiming), String>)>(batch_size * 2);
 
                 let progress_for_consumer = progress.clone();
 
@@ -496,6 +494,125 @@ pub async fn scan_directory_internal(
 
                 embeddings = emb_results;
                 processing_errors = errors;
+            }
+
+            Some(backend) => {
+                // Multi-consumer pipeline: rayon preprocessing feeds multiple
+                // inference consumers via dedicated channels. Each consumer has
+                // its own model instance, enabling concurrent inference on the
+                // accelerator (e.g., multiple Neural Engine sessions on CoreML).
+                use std::sync::mpsc;
+
+                let num_consumers = backend.models.len();
+                let thumb_dir_owned = thumb_dir.to_path_buf();
+
+                let emb_results = std::sync::Mutex::new(vec![None; num_images]);
+                let errors = std::sync::Mutex::new(Vec::new());
+                let paths_for_errors: Vec<String> =
+                    processing_inputs.iter().map(|(p, _, _)| p.clone()).collect();
+
+                // One channel per consumer — avoids lock contention on a shared receiver
+                let (senders, receivers): (Vec<_>, Vec<_>) = (0..num_consumers)
+                    .map(|_| {
+                        mpsc::sync_channel::<(
+                            usize,
+                            Result<(Vec<f32>, PreprocessTiming), String>,
+                        )>(4)
+                    })
+                    .unzip();
+
+                let inputs_owned: Vec<(usize, String, String, u64)> = processing_inputs
+                    .iter()
+                    .enumerate()
+                    .map(|(i, (p, ft, fs))| (i, p.clone(), ft.clone(), *fs))
+                    .collect();
+
+                let distribute_counter = Arc::new(AtomicUsize::new(0));
+                let num_consumers_copy = num_consumers;
+
+                // Producer: parallel preprocessing, round-robin to consumers
+                std::thread::spawn(move || {
+                    use rayon::prelude::*;
+                    inputs_owned
+                        .par_iter()
+                        .for_each(|(idx, path_str, file_type, file_size)| {
+                            let result = decode_thumbnail_preprocess(
+                                path_str,
+                                file_type,
+                                *file_size,
+                                &thumb_dir_owned,
+                                None,
+                            );
+                            let i = distribute_counter.fetch_add(1, Ordering::Relaxed)
+                                % num_consumers_copy;
+                            let _ = senders[i].send((*idx, result));
+                        });
+                    // All senders drop here, closing all channels
+                });
+
+                let progress_ref = &progress;
+
+                // Consumers: each thread has its own model instance and channel
+                std::thread::scope(|s| {
+                    for (consumer_idx, rx) in receivers.into_iter().enumerate() {
+                        let emb_results = &emb_results;
+                        let errors = &errors;
+                        let paths = &paths_for_errors;
+                        let model_mutex = &backend.models[consumer_idx];
+
+                        s.spawn(move || {
+                            let mut model = match model_mutex.lock() {
+                                Ok(m) => m,
+                                Err(e) => {
+                                    errors.lock().unwrap().push(format!(
+                                        "Failed to lock embedding model {}: {}",
+                                        consumer_idx, e
+                                    ));
+                                    return;
+                                }
+                            };
+
+                            for (original_idx, result) in rx.iter() {
+                                match result {
+                                    Ok((pixel_values, timing)) => {
+                                        let inference_start = std::time::Instant::now();
+                                        match model.embed_preprocessed(&pixel_values) {
+                                            Ok(emb) => {
+                                                let inference_time =
+                                                    inference_start.elapsed();
+                                                benchmark::log_image(
+                                                    &timing,
+                                                    inference_time,
+                                                    "pipeline",
+                                                );
+                                                emb_results.lock().unwrap()
+                                                    [original_idx] = Some(emb);
+                                            }
+                                            Err(e) => {
+                                                errors.lock().unwrap().push(format!(
+                                                    "Embedding error for {}: {}",
+                                                    paths[original_idx], e
+                                                ));
+                                            }
+                                        }
+                                    }
+                                    Err(e) => {
+                                        errors.lock().unwrap().push(format!(
+                                            "Processing error for {}: {}",
+                                            paths[original_idx], e
+                                        ));
+                                    }
+                                }
+                                if let Some(progress) = progress_ref {
+                                    progress.increment();
+                                }
+                            }
+                        });
+                    }
+                });
+
+                embeddings = emb_results.into_inner().unwrap();
+                processing_errors = errors.into_inner().unwrap();
             }
 
             None => {

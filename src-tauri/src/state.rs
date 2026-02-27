@@ -18,6 +18,10 @@ pub struct InferenceConfig {
     pub model_instances: usize,
     /// Images per inference call. 1 = single-image. >1 = batched.
     pub batch_size: usize,
+    /// Use pipeline mode: rayon preprocessing + dedicated inference thread(s).
+    /// True for accelerator backends (CUDA, CoreML) where CPU preprocessing and
+    /// accelerator inference should run concurrently.
+    pub pipeline: bool,
 }
 
 /// Return the inference config for the active backend feature.
@@ -27,13 +31,15 @@ pub fn inference_config() -> InferenceConfig {
         InferenceConfig {
             model_instances: 1,
             batch_size: 32,
+            pipeline: true,
         }
     }
     #[cfg(feature = "backend-coreml")]
     {
         InferenceConfig {
-            model_instances: 1,
+            model_instances: 2,
             batch_size: 1,
+            pipeline: true,
         }
     }
     #[cfg(all(not(feature = "backend-cuda"), not(feature = "backend-coreml")))]
@@ -45,6 +51,7 @@ pub fn inference_config() -> InferenceConfig {
                 .map(|n| n.get().min(MAX_WORKERS))
                 .unwrap_or(2),
             batch_size: 1,
+            pipeline: false,
         }
     }
 }
