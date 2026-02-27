@@ -6,7 +6,7 @@
   import { getCurrentWebview } from "@tauri-apps/api/webview";
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { open, message } from "@tauri-apps/plugin-dialog";
-  import { onMount, tick } from "svelte";
+  import { onMount, tick, untrack } from "svelte";
 
   interface ScanResult {
     images_found: number;
@@ -144,7 +144,9 @@
 
   async function search(query: string) {
     closePanel();
-    gridContainerEl?.scrollTo({ top: 0, behavior: "auto" });
+    selectedIndex = null;
+    selectedImage = null;
+    scrollToIndex(null);
     isLoading = true;
     try {
       // Use filtered search if any filters are active, otherwise use simple search
@@ -277,10 +279,6 @@
     await message(text, { title: "Bundle URL Test Results" });
   }
 
-  function handleImageDblClick(img: ImageInfo) {
-    openImage(img.path);
-  }
-
   function handleContextMenu(e: MouseEvent, img: ImageInfo) {
     e.preventDefault();
     contextMenuTrigger = e.currentTarget as HTMLElement;
@@ -294,9 +292,10 @@
   }
 
   async function findSimilar(img: ImageInfo) {
-    isLoading = true;
     closePanel();
-    gridContainerEl?.scrollTo({ top: 0, behavior: "auto" });
+    selectedIndex = null;
+    selectedImage = null;
+    isLoading = true;
     try {
       images = await invoke("search_similar_images", { imagePath: img.path });
       similarToImage = img;
@@ -306,6 +305,7 @@
       alert("Failed to find similar images: " + String(e));
     }
     isLoading = false;
+    scrollToIndex(null);
   }
 
   function closeContextMenu() {
@@ -337,43 +337,64 @@
     }
   }
 
-  async function openPanelAtIndex(index: number) {
+  function selectIndex(index: number) {
     if (index < 0 || index >= images.length) return;
-    if (panelWidthPct === null) {
-      panelWidthPct = 50;
-    }
     selectedIndex = index;
     selectedImage = images[index];
-    isPanelOpen = true;
-    await tick();
-    imageCellEls[index]?.scrollIntoView({ block: "center", inline: "nearest" });
+  }
+
+  function scrollToIndex(index: number | null) {
+    if (index === null) {
+      gridContainerEl?.scrollTo({ top: 0, behavior: "auto" });
+    } else {
+      imageCellEls[index]?.scrollIntoView({ block: "nearest", inline: "nearest" });
+    }
+  }
+
+  function navigateTo(index: number) {
+    selectIndex(index);
+    scrollToIndex(index);
     imageCellEls[index]?.focus();
+  }
+
+  // Re-scroll selected image into view when layout changes
+  $effect(() => {
+    isPanelOpen; // track panel open/close
+    const idx = untrack(() => selectedIndex);
+    if (idx !== null) tick().then(() => scrollToIndex(idx));
+  });
+
+  function openPanelAtIndex(index: number) {
+    if (index < 0 || index >= images.length) return;
+    if (panelWidthPct === null) panelWidthPct = 50;
+    isPanelOpen = true;
+    navigateTo(index);
   }
 
   function closePanel() {
     isPanelOpen = false;
-    selectedIndex = null;
-    selectedImage = null;
     isResizingPanel = false;
   }
 
-  function handleImageClick(index: number) {
-    openPanelAtIndex(index);
-  }
-
   function handleKeyDown(e: KeyboardEvent) {
-    if (!isPanelOpen || selectedIndex === null || images.length === 0) return;
+    if (e.key === "Escape" && isPanelOpen) {
+      e.preventDefault();
+      closePanel();
+      return;
+    }
+
+    if (selectedIndex === null || images.length === 0) return;
     const target = e.target as HTMLElement | null;
     const tag = target?.tagName?.toLowerCase();
     if (tag === "input" || tag === "textarea" || target?.isContentEditable) return;
 
     if (e.key === "ArrowRight") {
       e.preventDefault();
-      openPanelAtIndex(Math.min(selectedIndex + 1, images.length - 1));
+      navigateTo(Math.min(selectedIndex + 1, images.length - 1));
     }
     if (e.key === "ArrowLeft") {
       e.preventDefault();
-      openPanelAtIndex(Math.max(selectedIndex - 1, 0));
+      navigateTo(Math.max(selectedIndex - 1, 0));
     }
   }
 
@@ -564,7 +585,8 @@
   onkeydown={handleKeyDown}
   onmousemove={handleWindowMouseMove}
   onmouseup={handleWindowMouseUp}
-/>
+  onresize={() => { if (selectedIndex !== null) scrollToIndex(selectedIndex); }}
+/> <!-- onresize: keep selected image visible on reflow -->
 
 <div class="app">
   <header class="toolbar">
@@ -603,9 +625,9 @@
             <button
               class="image-cell"
               class:selected={selectedImage?.path === img.path}
-              onclick={() => handleImageClick(index)}
-              onfocus={() => { if (isPanelOpen) openPanelAtIndex(index); }}
-              ondblclick={() => handleImageDblClick(img)}
+              onclick={() => openPanelAtIndex(index)}
+              onfocus={() => selectIndex(index)}
+              ondblclick={() => openImage(img.path)}
               oncontextmenu={(e) => handleContextMenu(e, img)}
               bind:this={imageCellEls[index]}
             >
@@ -680,7 +702,7 @@
         class="context-item"
         class:disabled={!embeddingModelLoaded}
         disabled={!embeddingModelLoaded}
-        onclick={() => { findSimilar(contextMenu!.image); closeContextMenu(); }}
+        onclick={() => { const img = contextMenu!.image; closeContextMenu(); findSimilar(img); }}
       >
         Find similar
       </button>
