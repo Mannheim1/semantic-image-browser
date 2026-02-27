@@ -8181,6 +8181,7 @@ dependencies = [
  "hex",
  "image",
  "lancedb",
+ "libc",
  "ndarray 0.17.2",
  "ort",
  "png 0.18.0",
