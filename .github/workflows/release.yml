@@ -38,14 +38,14 @@ jobs:
             cuda-lib-glob: "*.dll"
 
           # ── macOS ────────────────────────────────────────────────
-          - name: macOS ARM64
+          - name: macOS ARM64 (CoreML)
             os: macos-latest
             rust-target: aarch64-apple-darwin
             ort-url: https://github.com/microsoft/onnxruntime/releases/download/v1.23.2/onnxruntime-osx-arm64-1.23.2.tgz
             ort-lib: libonnxruntime.dylib
             ort-inner-dir: onnxruntime-osx-arm64-1.23.2
             cuda: false
-            cargo-features: ""
+            cargo-features: "--features backend-coreml"
 
 
     name: ${{ matrix.name }}

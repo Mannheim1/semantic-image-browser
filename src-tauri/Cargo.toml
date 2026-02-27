@@ -19,6 +19,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 default = ["backend-cpu"]
 backend-cpu = []
 backend-cuda = []
+backend-coreml = []
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

@@ -29,7 +29,14 @@ pub fn inference_config() -> InferenceConfig {
             batch_size: 32,
         }
     }
-    #[cfg(not(feature = "backend-cuda"))]
+    #[cfg(feature = "backend-coreml")]
+    {
+        InferenceConfig {
+            model_instances: 1,
+            batch_size: 1,
+        }
+    }
+    #[cfg(all(not(feature = "backend-cuda"), not(feature = "backend-coreml")))]
     {
         // Cap at 4 workers to limit RAM (~500MB per model instance)
         const MAX_WORKERS: usize = 4;

@@ -416,6 +416,8 @@ fn get_build_variant() -> String {
 
     let accel = if cfg!(feature = "backend-cuda") {
         " (CUDA)"
+    } else if cfg!(feature = "backend-coreml") {
+        " (CoreML)"
     } else {
         " (CPU)"
     };
@@ -462,6 +464,8 @@ fn get_dependency_paths(app: AppHandle) -> Vec<(String, String)> {
 
     let backend_name = if cfg!(feature = "backend-cuda") {
         "CUDA"
+    } else if cfg!(feature = "backend-coreml") {
+        "CoreML"
     } else {
         "CPU"
     };

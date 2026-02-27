@@ -8,6 +8,8 @@
 
 #[cfg(feature = "backend-cuda")]
 use ort::execution_providers::CUDAExecutionProvider;
+#[cfg(feature = "backend-coreml")]
+use ort::execution_providers::CoreMLExecutionProvider;
 use ort::session::Session;
 use ort::value::Value;
 use std::path::Path;
@@ -94,13 +96,18 @@ const IMAGE_STD: [f32; 3] = [0.5, 0.5, 0.5];
 /// Return the execution providers for the active backend feature.
 ///
 /// - `backend-cuda`: CUDA provider (errors on failure to load)
+/// - `backend-coreml`: CoreML provider (errors on failure to load)
 /// - `backend-cpu` (default): empty list → ORT uses its built-in CPU provider
 fn execution_providers() -> Vec<ort::execution_providers::ExecutionProviderDispatch> {
     #[cfg(feature = "backend-cuda")]
     {
         vec![CUDAExecutionProvider::default().build().error_on_failure()]
     }
-    #[cfg(not(feature = "backend-cuda"))]
+    #[cfg(feature = "backend-coreml")]
+    {
+        vec![CoreMLExecutionProvider::default().build().error_on_failure()]
+    }
+    #[cfg(all(not(feature = "backend-cuda"), not(feature = "backend-coreml")))]
     {
         vec![]
     }
