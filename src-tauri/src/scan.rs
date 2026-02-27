@@ -286,8 +286,9 @@ pub async fn scan_directory_internal(
         let processing_errors: Vec<String>;
 
         match embedding_backend {
-            Some(backend) if backend.config.batch_size <= 1 => {
+            Some(backend) if backend.models.len() > 1 => {
                 // Thread-parallel mode: round-robin images across model instances.
+                // Used for CPU backend where multiple model copies run in parallel.
                 // Each worker thread decodes, generates thumbnail, preprocesses, and runs
                 // single-image inference sequentially.
                 let num_workers = backend.models.len();
@@ -367,9 +368,11 @@ pub async fn scan_directory_internal(
             }
 
             Some(backend) => {
-                // Batched mode: Rayon producers decode + thumbnail + preprocess in parallel,
+                // Pipeline mode: Rayon producers decode + thumbnail + preprocess in parallel,
                 // send preprocessed tensors through a bounded channel.
-                // Consumer collects batches and runs batched inference.
+                // Consumer collects batches and runs inference.
+                // Used for single-instance backends (CUDA, CoreML) where the accelerator
+                // handles inference while CPU threads handle preprocessing concurrently.
                 use std::sync::mpsc;
 
                 let batch_size = backend.config.batch_size;
@@ -385,7 +388,7 @@ pub async fn scan_directory_internal(
                     }
                 };
 
-                let (tx, rx) = mpsc::sync_channel::<(usize, Result<(Vec<f32>, PreprocessTiming), String>)>(batch_size * 2);
+                let (tx, rx) = mpsc::sync_channel::<(usize, Result<(Vec<f32>, PreprocessTiming), String>)>((batch_size * 2).max(8));
 
                 let progress_for_consumer = progress.clone();
 
