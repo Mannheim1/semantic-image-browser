@@ -218,9 +218,9 @@ async fn get_indexed_count(state: tauri::State<'_, AppState>) -> Result<u32, Str
 }
 
 #[tauri::command]
-async fn get_all_images(state: tauri::State<'_, AppState>) -> Result<Vec<ImageInfo>, String> {
+async fn get_initial_images(state: tauri::State<'_, AppState>) -> Result<Vec<ImageInfo>, String> {
     let table = state.table.lock().await;
-    database::get_all_images(&table).await
+    database::get_initial_images(&table).await
 }
 
 /// Search for images using semantic similarity if the embedding model is available,
@@ -233,7 +233,7 @@ async fn get_all_images(state: tauri::State<'_, AppState>) -> Result<Vec<ImageIn
 async fn search_images(state: tauri::State<'_, AppState>, query: String) -> Result<Vec<database::SearchResult>, String> {
     let table = state.table.lock().await;
     if query.trim().is_empty() {
-        let images = database::get_all_images(&table).await?;
+        let images = database::get_initial_images(&table).await?;
         let results = images
             .into_iter()
             .map(|img| database::SearchResult {
@@ -713,7 +713,7 @@ pub fn run() {
             get_thumbnail_path,
             get_watched_directories,
             get_indexed_count,
-            get_all_images,
+            get_initial_images,
             search_images,
             search_similar_images,
             search_images_filtered,

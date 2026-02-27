@@ -472,7 +472,7 @@ fn build_filter_predicate(filter: &FilterOptions) -> Result<Option<String>, Stri
     }
 }
 
-pub async fn get_all_images(table: &Table) -> Result<Vec<ImageInfo>, String> {
+pub async fn get_initial_images(table: &Table) -> Result<Vec<ImageInfo>, String> {
     let batches: Vec<RecordBatch> = table
         .query()
         .select(lancedb::query::Select::Columns(vec![
