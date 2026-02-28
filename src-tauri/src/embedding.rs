@@ -7,9 +7,9 @@
 //! - Generating embeddings for images and text queries
 
 #[cfg(feature = "backend-cuda")]
-use ort::execution_providers::CUDAExecutionProvider;
+use ort::ep::CUDAExecutionProvider;
 #[cfg(feature = "backend-coreml")]
-use ort::execution_providers::CoreMLExecutionProvider;
+use ort::ep::CoreMLExecutionProvider;
 use ort::session::Session;
 use ort::value::Value;
 use std::path::Path;
@@ -105,7 +105,17 @@ fn execution_providers() -> Vec<ort::execution_providers::ExecutionProviderDispa
     }
     #[cfg(feature = "backend-coreml")]
     {
-        vec![CoreMLExecutionProvider::default().build().error_on_failure()]
+        use ort::ep::coreml::{ComputeUnits, ModelFormat, SpecializationStrategy};
+        vec![
+            CoreMLExecutionProvider::default()
+                .with_model_format(ModelFormat::MLProgram)
+                .with_static_input_shapes(true)
+                .with_compute_units(ComputeUnits::CPUAndNeuralEngine)
+                .with_specialization_strategy(SpecializationStrategy::FastPrediction)
+                .with_profile_compute_plan(true)
+                .build()
+                .error_on_failure(),
+        ]
     }
     #[cfg(all(not(feature = "backend-cuda"), not(feature = "backend-coreml")))]
     {
