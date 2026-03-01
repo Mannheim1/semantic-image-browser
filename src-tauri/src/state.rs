@@ -97,8 +97,16 @@ impl EmbeddingBackend {
         Ok(Self { models, config })
     }
 
-    /// Embed text using the first model instance (for search queries).
+    /// Embed text using any available model instance (for search queries).
+    /// Tries each instance with try_lock first, falling back to blocking on the first.
     pub fn embed_text(&self, text: &str) -> Result<Vec<f32>, String> {
+        // Try to find an unlocked instance (avoids blocking during scans)
+        for model in &self.models {
+            if let Ok(mut guard) = model.try_lock() {
+                return guard.embed_text(text);
+            }
+        }
+        // All busy — block on the first one
         let model = self.models.first().ok_or("No models loaded")?;
         let mut guard = model
             .lock()
