@@ -11,6 +11,8 @@ use ort::ep::CUDAExecutionProvider;
 #[cfg(feature = "backend-coreml")]
 use ort::ep::CoreMLExecutionProvider;
 use ort::session::Session;
+#[cfg(feature = "backend-coreml")]
+use ort::session::builder::SessionBuilder;
 use ort::value::Value;
 use std::path::Path;
 use std::sync::OnceLock;
@@ -108,7 +110,7 @@ fn execution_providers() -> Vec<ort::execution_providers::ExecutionProviderDispa
         use ort::ep::coreml::{ComputeUnits, ModelFormat, SpecializationStrategy};
         vec![
             CoreMLExecutionProvider::default()
-                .with_model_format(ModelFormat::MLProgram)
+                .with_model_format(ModelFormat::NeuralNetwork)
                 .with_static_input_shapes(true)
                 .with_compute_units(ComputeUnits::CPUAndNeuralEngine)
                 .with_specialization_strategy(SpecializationStrategy::FastPrediction)
@@ -124,7 +126,40 @@ fn execution_providers() -> Vec<ort::execution_providers::ExecutionProviderDispa
 }
 
 /// Build an ONNX session for the given model file, using the active backend's execution providers.
-fn build_session(model_path: &Path, label: &str) -> Result<Session, String> {
+enum ModelKind {
+    Vision,
+    Text,
+}
+
+#[cfg(feature = "backend-coreml")]
+fn apply_coreml_dimension_overrides(
+    mut builder: SessionBuilder,
+    label: &str,
+    kind: ModelKind,
+) -> Result<SessionBuilder, String> {
+    let overrides: &[(&str, i64)] = match kind {
+        // Vision preprocessing always emits [1, 3, 256, 256].
+        ModelKind::Vision => &[
+            ("batch_size", 1),
+            ("num_channels", 3),
+            ("height", IMAGE_SIZE as i64),
+            ("width", IMAGE_SIZE as i64),
+        ],
+        // Text path always pads/truncates to MAX_SEQ_LENGTH.
+        ModelKind::Text => &[("batch_size", 1), ("sequence_length", MAX_SEQ_LENGTH as i64)],
+    };
+
+    for (name, size) in overrides {
+        builder = builder
+            .with_dimension_override(*name, *size)
+            .map_err(|e| format!("Failed to set {}={} override for {}: {}", name, size, label, e))?;
+    }
+
+    Ok(builder)
+}
+
+/// Build an ONNX session for the given model file, using the active backend's execution providers.
+fn build_session(model_path: &Path, label: &str, kind: ModelKind) -> Result<Session, String> {
     let providers = execution_providers();
     let builder = Session::builder()
         .map_err(|e| format!("Failed to create {} session builder: {}", label, e))?;
@@ -136,6 +171,9 @@ fn build_session(model_path: &Path, label: &str) -> Result<Session, String> {
             .with_execution_providers(providers)
             .map_err(|e| format!("Failed to register execution providers for {}: {}", label, e))?
     };
+
+    #[cfg(feature = "backend-coreml")]
+    let builder = apply_coreml_dimension_overrides(builder, label, kind)?;
 
     builder
         .commit_from_file(model_path)
@@ -174,8 +212,8 @@ impl EmbeddingModel {
             return Err(format!("Tokenizer not found: {}", tokenizer_path.display()));
         }
 
-        let vision_session = build_session(&vision_path, "vision model")?;
-        let text_session = build_session(&text_path, "text model")?;
+        let vision_session = build_session(&vision_path, "vision model", ModelKind::Vision)?;
+        let text_session = build_session(&text_path, "text model", ModelKind::Text)?;
 
         let tokenizer = Tokenizer::from_file(&tokenizer_path)
             .map_err(|e| format!("Failed to load tokenizer: {}", e))?;
