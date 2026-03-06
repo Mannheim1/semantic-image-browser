@@ -268,7 +268,7 @@
   }
 
   function showAbout() {
-    invoke("open_popup", { route: "/about", title: "About", width: 360, height: 255, resizable: false });
+    invoke("open_popup", { route: "/about", title: "About", width: 390, height: 255, resizable: false });
   }
 
   function showViewControls() {
