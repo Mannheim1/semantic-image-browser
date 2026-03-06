@@ -13,7 +13,7 @@ use ort::ep::CoreMLExecutionProvider;
 use ort::session::Session;
 #[cfg(feature = "backend-coreml")]
 use ort::session::builder::SessionBuilder;
-use ort::value::Value;
+use ort::value::TensorRef;
 use std::path::Path;
 use std::sync::OnceLock;
 use tokenizers::Tokenizer;
@@ -267,7 +267,7 @@ impl EmbeddingModel {
         let num_valid = batch.valid_indices.len() as i64;
         let shape = [num_valid, 3, IMAGE_SIZE as i64, IMAGE_SIZE as i64];
 
-        let input_tensor = match Value::from_array((shape, batch.pixel_data.clone())) {
+        let input_tensor = match TensorRef::from_array_view((shape, &*batch.pixel_data)) {
             Ok(t) => t,
             Err(e) => {
                 let err = format!("Failed to create batched vision input tensor: {}", e);
@@ -315,7 +315,6 @@ impl EmbeddingModel {
 
         // Split the batched output into individual embeddings
         let embedding_dim = VISUAL_EMBEDDING_DIM as usize;
-        let flat_data: Vec<f32> = data.iter().copied().collect();
 
         // Compute per-image share of inference time for logging
         let per_image_inference = inference_time / batch.valid_indices.len() as u32;
@@ -323,13 +322,12 @@ impl EmbeddingModel {
         for (batch_idx, &original_idx) in batch.valid_indices.iter().enumerate() {
             let start = batch_idx * embedding_dim;
             let end = start + embedding_dim;
-            if end <= flat_data.len() {
-                let embedding: Vec<f32> = flat_data[start..end].to_vec();
-                results[original_idx] = Ok(l2_normalize(&embedding));
+            if end <= data.len() {
+                results[original_idx] = Ok(l2_normalize(&data[start..end]));
             } else {
                 results[original_idx] = Err(format!(
                     "Embedding index out of bounds: expected {}..{}, got len {}",
-                    start, end, flat_data.len()
+                    start, end, data.len()
                 ));
             }
 
@@ -377,7 +375,7 @@ impl EmbeddingModel {
     fn run_vision_inference(&mut self, pixel_values: &[f32]) -> Result<Vec<f32>, String> {
         // Create input tensor with shape [1, 3, 256, 256]
         let shape = [1_i64, 3, IMAGE_SIZE as i64, IMAGE_SIZE as i64];
-        let input_tensor = Value::from_array((shape, pixel_values.to_vec()))
+        let input_tensor = TensorRef::from_array_view((shape, pixel_values))
             .map_err(|e| format!("Failed to create vision input tensor: {}", e))?;
 
         // Run inference
@@ -413,7 +411,7 @@ impl EmbeddingModel {
     fn run_text_inference(&mut self, input_ids: &[i64]) -> Result<Vec<f32>, String> {
         // Create input tensor with shape [1, sequence_length]
         let shape = [1_i64, input_ids.len() as i64];
-        let input_tensor = Value::from_array((shape, input_ids.to_vec()))
+        let input_tensor = TensorRef::from_array_view((shape, input_ids))
             .map_err(|e| format!("Failed to create text input tensor: {}", e))?;
 
         // Run inference
