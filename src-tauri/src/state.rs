@@ -67,12 +67,19 @@ pub struct EmbeddingBackend {
 impl EmbeddingBackend {
     /// Load a new backend with the given config.
     /// Creates `config.model_instances` copies of the model.
-    pub fn load(model_dir: &std::path::Path) -> Result<Self, String> {
+    pub fn load(
+        model_dir: &std::path::Path,
+        #[cfg(feature = "backend-coreml")] cache_dir: &std::path::Path,
+    ) -> Result<Self, String> {
         let config = inference_config();
         let mut models = Vec::with_capacity(config.model_instances);
 
         for i in 0..config.model_instances {
-            match EmbeddingModel::load(model_dir) {
+            match EmbeddingModel::load(
+                model_dir,
+                #[cfg(feature = "backend-coreml")]
+                cache_dir,
+            ) {
                 Ok(model) => models.push(Mutex::new(model)),
                 Err(e) => {
                     if models.is_empty() {

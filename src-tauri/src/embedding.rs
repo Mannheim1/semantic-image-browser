@@ -100,7 +100,9 @@ const IMAGE_STD: [f32; 3] = [0.5, 0.5, 0.5];
 /// - `backend-cuda`: CUDA provider (errors on failure to load)
 /// - `backend-coreml`: CoreML provider (errors on failure to load)
 /// - `backend-cpu` (default): empty list → ORT uses its built-in CPU provider
-fn execution_providers() -> Vec<ort::execution_providers::ExecutionProviderDispatch> {
+fn execution_providers(
+    #[cfg(feature = "backend-coreml")] cache_dir: &Path,
+) -> Vec<ort::execution_providers::ExecutionProviderDispatch> {
     #[cfg(feature = "backend-cuda")]
     {
         vec![CUDAExecutionProvider::default().build().error_on_failure()]
@@ -115,6 +117,7 @@ fn execution_providers() -> Vec<ort::execution_providers::ExecutionProviderDispa
                 .with_compute_units(ComputeUnits::CPUAndNeuralEngine)
                 .with_specialization_strategy(SpecializationStrategy::FastPrediction)
                 .with_profile_compute_plan(true)
+                .with_model_cache_dir(cache_dir.to_string_lossy())
                 .build()
                 .error_on_failure(),
         ]
@@ -159,8 +162,16 @@ fn apply_coreml_dimension_overrides(
 }
 
 /// Build an ONNX session for the given model file, using the active backend's execution providers.
-fn build_session(model_path: &Path, label: &str, kind: ModelKind) -> Result<Session, String> {
-    let providers = execution_providers();
+fn build_session(
+    model_path: &Path,
+    label: &str,
+    kind: ModelKind,
+    #[cfg(feature = "backend-coreml")] cache_dir: &Path,
+) -> Result<Session, String> {
+    let providers = execution_providers(
+        #[cfg(feature = "backend-coreml")]
+        cache_dir,
+    );
     let builder = Session::builder()
         .map_err(|e| format!("Failed to create {} session builder: {}", label, e))?;
 
@@ -196,7 +207,10 @@ impl EmbeddingModel {
     /// - `tokenizer.json`
     ///
     /// The execution provider is determined at compile time by the active backend feature.
-    pub fn load(model_dir: &Path) -> Result<Self, String> {
+    pub fn load(
+        model_dir: &Path,
+        #[cfg(feature = "backend-coreml")] cache_dir: &Path,
+    ) -> Result<Self, String> {
         let vision_path = model_dir.join("onnx").join("vision_model.onnx");
         let text_path = model_dir.join("onnx").join("text_model.onnx");
         let tokenizer_path = model_dir.join("tokenizer.json");
@@ -212,8 +226,20 @@ impl EmbeddingModel {
             return Err(format!("Tokenizer not found: {}", tokenizer_path.display()));
         }
 
-        let vision_session = build_session(&vision_path, "vision model", ModelKind::Vision)?;
-        let text_session = build_session(&text_path, "text model", ModelKind::Text)?;
+        let vision_session = build_session(
+            &vision_path,
+            "vision model",
+            ModelKind::Vision,
+            #[cfg(feature = "backend-coreml")]
+            cache_dir,
+        )?;
+        let text_session = build_session(
+            &text_path,
+            "text model",
+            ModelKind::Text,
+            #[cfg(feature = "backend-coreml")]
+            cache_dir,
+        )?;
 
         let tokenizer = Tokenizer::from_file(&tokenizer_path)
             .map_err(|e| format!("Failed to load tokenizer: {}", e))?;

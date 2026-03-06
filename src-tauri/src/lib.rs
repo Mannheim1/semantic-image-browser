@@ -684,7 +684,22 @@ pub fn run() {
 
                 let model_id = Some("siglip2-base-patch16-256".to_string());
 
-                let (embedding_backend, model_id) = match EmbeddingBackend::load(&model_path) {
+                #[cfg(feature = "backend-coreml")]
+                let coreml_cache_dir = {
+                    let dir = handle_for_task
+                        .path()
+                        .app_local_data_dir()
+                        .expect("Failed to get app data dir")
+                        .join("coreml-cache");
+                    std::fs::create_dir_all(&dir).ok();
+                    dir
+                };
+
+                let (embedding_backend, model_id) = match EmbeddingBackend::load(
+                    &model_path,
+                    #[cfg(feature = "backend-coreml")]
+                    &coreml_cache_dir,
+                ) {
                     Ok(backend) => (Some(Arc::new(backend)), model_id),
                     Err(e) => {
                         eprintln!("Failed to load embedding backend: {}", e);
