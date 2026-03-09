@@ -19,7 +19,7 @@ use walkdir::WalkDir;
 use crate::benchmark::{self, PreprocessTiming};
 use crate::database::{self, ImageRecord};
 use crate::embedding::{EmbeddingModel, PreprocessedBatch, preprocess_image_from_rgb, IMAGE_SIZE};
-use crate::image_ops::decode_image_to_rgb;
+use crate::image_ops::{decode_image_to_rgb, detect_image_format, format_to_str};
 use crate::state::EmbeddingBackend;
 use crate::thumbnail;
 
@@ -42,11 +42,15 @@ fn is_image_file(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
-fn get_extension(path: &Path) -> String {
-    path.extension()
-        .and_then(|ext| ext.to_str())
-        .map(|ext| ext.to_lowercase())
-        .unwrap_or_default()
+/// Detect the actual file type via magic bytes, falling back to extension.
+fn get_file_type(path: &Path) -> String {
+    match detect_image_format(path) {
+        Ok(fmt) => format_to_str(fmt).to_string(),
+        _ => path.extension()
+            .and_then(|ext| ext.to_str())
+            .map(|ext| ext.to_lowercase())
+            .unwrap_or_default(),
+    }
 }
 
 pub fn scan_directory(dir: &Path) -> Result<Vec<ScannedFile>, String> {
@@ -73,7 +77,7 @@ pub fn scan_directory(dir: &Path) -> Result<Vec<ScannedFile>, String> {
 
         files.push(ScannedFile {
             path: path.to_string_lossy().to_string(),
-            file_type: get_extension(path),
+            file_type: get_file_type(path),
             file_size: metadata.len(),
             created_at,
             modified_at,

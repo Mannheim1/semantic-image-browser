@@ -6,7 +6,7 @@
 //! CSV columns:
 //! - timestamp: ISO 8601 wall-clock time
 //! - file: filename (not full path, for readability)
-//! - file_type: extension (jpg, png, etc.)
+//! - file_type: detected format via magic bytes (jpg, png, webp, etc.)
 //! - file_size_bytes: raw file size on disk
 //! - source_width: decoded image width in pixels
 //! - source_height: decoded image height in pixels

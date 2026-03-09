@@ -7,26 +7,51 @@
 use fast_image_resize::{images::Image as FirImage, ResizeAlg, ResizeOptions, Resizer, PixelType};
 use std::path::Path;
 
+// ── Magic-byte format detection ─────────────────────────────────────
+
+/// Detect image format by reading magic bytes, using the image crate's built-in detection.
+pub fn detect_image_format(path: &Path) -> Result<image::ImageFormat, String> {
+    use std::io::Read;
+    let mut file = std::fs::File::open(path)
+        .map_err(|e| format!("Failed to open {}: {}", path.display(), e))?;
+    let mut header = [0u8; 12];
+    let n = file.read(&mut header)
+        .map_err(|e| format!("Failed to read header of {}: {}", path.display(), e))?;
+    image::guess_format(&header[..n])
+        .map_err(|e| format!("Unrecognized image format for {}: {}", path.display(), e))
+}
+
+/// Convert an image::ImageFormat to a canonical file type string for database storage.
+pub fn format_to_str(fmt: image::ImageFormat) -> &'static str {
+    match fmt {
+        image::ImageFormat::Jpeg => "jpg",
+        image::ImageFormat::Png => "png",
+        image::ImageFormat::WebP => "webp",
+        image::ImageFormat::Gif => "gif",
+        image::ImageFormat::Bmp => "bmp",
+        image::ImageFormat::Tiff => "tiff",
+        image::ImageFormat::Avif => "avif",
+        _ => "unknown",
+    }
+}
+
+// ── Image decoding ──────────────────────────────────────────────────
+
 /// Decode an image file to RGB pixel data.
-/// Uses the fastest available decoder for each format:
+/// Detects actual format via magic bytes (not file extension) and routes
+/// to the fastest available decoder:
 /// - JPEG: turbojpeg with scaled decoding
 /// - PNG: direct png crate decoder
 /// - Other: image crate fallback
 ///
 /// Returns (rgb_data, width, height).
 pub fn decode_image_to_rgb(path: &Path) -> Result<(Vec<u8>, u32, u32), String> {
-    let ext = path
-        .extension()
-        .and_then(|e| e.to_str())
-        .map(|e| e.to_lowercase())
-        .unwrap_or_default();
+    let format = detect_image_format(path).ok();
 
-    if ext == "jpg" || ext == "jpeg" || ext == "jfif" {
-        decode_jpeg_scaled(path)
-    } else if ext == "png" {
-        decode_png(path)
-    } else {
-        decode_other_format(path)
+    match format {
+        Some(image::ImageFormat::Jpeg) => decode_jpeg_scaled(path),
+        Some(image::ImageFormat::Png) => decode_png(path),
+        _ => decode_other_format(path),
     }
 }
 
@@ -164,9 +189,14 @@ fn decode_png(path: &Path) -> Result<(Vec<u8>, u32, u32), String> {
 }
 
 /// Decode non-JPEG/non-PNG formats using the image crate.
+/// Uses magic-byte detection via `with_guessed_format()` rather than trusting the extension.
 fn decode_other_format(path: &Path) -> Result<(Vec<u8>, u32, u32), String> {
-    let img = image::open(path)
-        .map_err(|e| format!("Failed to open image {}: {}", path.display(), e))?;
+    let img = image::ImageReader::open(path)
+        .map_err(|e| format!("Failed to open image {}: {}", path.display(), e))?
+        .with_guessed_format()
+        .map_err(|e| format!("Failed to detect format of {}: {}", path.display(), e))?
+        .decode()
+        .map_err(|e| format!("Failed to decode image {}: {}", path.display(), e))?;
 
     let rgb = img.to_rgb8();
     let width = rgb.width();
