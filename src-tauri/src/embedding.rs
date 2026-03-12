@@ -165,7 +165,7 @@ fn apply_coreml_dimension_overrides(
 fn build_session(
     model_path: &Path,
     label: &str,
-    kind: ModelKind,
+    _kind: ModelKind,
     #[cfg(feature = "backend-coreml")] cache_dir: &Path,
 ) -> Result<Session, String> {
     let providers = execution_providers(
