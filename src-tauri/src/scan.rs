@@ -10,7 +10,7 @@
 use serde::Serialize;
 use std::collections::HashSet;
 use std::path::Path;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::SystemTime;
 use tauri::{AppHandle, Emitter};
@@ -26,6 +26,20 @@ use crate::thumbnail;
 // ── Directory scanning ──────────────────────────────────────────────
 
 const IMAGE_EXTENSIONS: &[&str] = &["jpg", "jpeg", "jfif", "png", "gif", "webp", "bmp", "tiff", "tif", "avif"];
+const SLOW_SCAN_SLEEP_MS: u64 = 100;
+static SLOW_SCAN_ENABLED: AtomicBool = AtomicBool::new(false);
+
+pub fn toggle_slow_scan() -> bool {
+    let new_value = !SLOW_SCAN_ENABLED.load(Ordering::Relaxed);
+    SLOW_SCAN_ENABLED.store(new_value, Ordering::Relaxed);
+    new_value
+}
+
+fn slow_scan_pause() {
+    if SLOW_SCAN_ENABLED.load(Ordering::Relaxed) {
+        std::thread::sleep(std::time::Duration::from_millis(SLOW_SCAN_SLEEP_MS));
+    }
+}
 
 pub struct ScannedFile {
     pub path: String,
@@ -362,6 +376,8 @@ pub async fn scan_directory_internal(
                                 if let Some(progress) = progress_ref {
                                     progress.increment();
                                 }
+
+                                slow_scan_pause();
                             }
                         });
                     }
@@ -408,6 +424,7 @@ pub async fn scan_directory_internal(
                             path_str, file_type, *file_size, &thumb_dir_owned, None,
                         );
                         let _ = tx.send((*idx, result));
+                        slow_scan_pause();
                     });
                     // tx drops here, closing the channel
                 });
@@ -550,6 +567,7 @@ pub async fn scan_directory_internal(
                             let i = distribute_counter.fetch_add(1, Ordering::Relaxed)
                                 % num_consumers_copy;
                             let _ = senders[i].send((*idx, result));
+                            slow_scan_pause();
                         });
                     // All senders drop here, closing all channels
                 });
@@ -656,6 +674,8 @@ pub async fn scan_directory_internal(
                                     if let Some(progress) = &progress {
                                         progress.increment();
                                     }
+
+                                    slow_scan_pause();
                                 }
                             });
                         }

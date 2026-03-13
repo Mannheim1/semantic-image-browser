@@ -584,6 +584,12 @@ fn toggle_benchmarking() -> bool {
     new_value
 }
 
+/// Toggle slow scan mode (adds a fixed delay per processed image).
+#[tauri::command]
+fn toggle_slow_scan() -> bool {
+    scan::toggle_slow_scan()
+}
+
 /// Open a popup window at the given frontend route.
 /// If a window for that route already exists, focus it instead.
 #[tauri::command]
@@ -743,6 +749,7 @@ pub fn run() {
             clear_database,
             open_app_data_folder,
             toggle_benchmarking,
+            toggle_slow_scan,
             get_build_variant,
             get_dependency_paths,
             test_bundle_urls,

@@ -554,6 +554,9 @@
       case "toggle_benchmarking":
         invoke("toggle_benchmarking");
         break;
+      case "toggle_slow_scan":
+        invoke("toggle_slow_scan");
+        break;
       case "show_dependency_paths":
         showDependencyPaths();
         break;

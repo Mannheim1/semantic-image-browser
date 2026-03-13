@@ -109,6 +109,7 @@ pub fn build_menu(app: &mut tauri::App, config: &AppConfig) -> Result<Menu<Wry>,
             .item(&MenuItemBuilder::new("Debug mode enabled").id("debug_mode_enabled").enabled(false).build(app)?)
             .separator()
             .item(&CheckMenuItemBuilder::new(benchmarking_label).id("toggle_benchmarking").checked(false).build(app)?)
+            .item(&CheckMenuItemBuilder::new("Slow Scan").id("toggle_slow_scan").checked(false).build(app)?)
             .separator()
             .item(&MenuItemBuilder::new("&Dependency Paths").id("show_dependency_paths").build(app)?)
             .item(&MenuItemBuilder::new("&Test Bundle URLs").id("test_bundle_urls").build(app)?)
