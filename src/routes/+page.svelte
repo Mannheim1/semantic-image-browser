@@ -608,6 +608,7 @@
         placeholder={searchBarPlaceholder}
         value={similarToImage ? "" : searchQuery}
         oninput={handleSearchInput}
+        spellcheck={false}
         disabled={searchBarDisabled}
       />
     </div>
