@@ -23,6 +23,9 @@ jobs:
             ort-inner-dir: onnxruntime-win-x64-1.23.2
             cuda: false
             cargo-features: ""
+            artifact-name: windows-cpu
+            artifact-ext: exe
+            bundle-target: nsis
 
           - name: Windows x64 (CUDA)
             os: windows-latest
@@ -36,6 +39,9 @@ jobs:
             cuda-cublas-url: https://developer.download.nvidia.com/compute/cuda/redist/libcublas/windows-x86_64/libcublas-windows-x86_64-12.8.4.1-archive.zip
             cuda-cudnn-url: https://developer.download.nvidia.com/compute/cudnn/redist/cudnn/windows-x86_64/cudnn-windows-x86_64-9.19.0.56_cuda12-archive.zip
             cuda-lib-glob: "*.dll"
+            artifact-name: windows-gpu-cuda
+            artifact-ext: exe
+            bundle-target: nsis
 
           # ── macOS ────────────────────────────────────────────────
           - name: macOS ARM64 (CoreML)
@@ -46,6 +52,9 @@ jobs:
             ort-inner-dir: onnxruntime-osx-arm64-1.23.2
             cuda: false
             cargo-features: "--features backend-coreml"
+            artifact-name: macos-arm64
+            artifact-ext: dmg
+            bundle-target: dmg
 
 
     name: ${{ matrix.name }}
@@ -157,14 +166,29 @@ jobs:
 
       # ── Build ──────────────────────────────────────────────────
       - name: Build Tauri app
-        uses: tauri-apps/tauri-action@v0
+        shell: bash
+        run: |
+          npx tauri build \
+            --target ${{ matrix.rust-target }} \
+            ${{ matrix.cargo-features }} \
+            --config '{"bundle":{"targets":["${{ matrix.bundle-target }}"],"resources":["bundled/lib/*","bundled/model/onnx/*","bundled/model/tokenizer.json"]}}'
+
+      # ── Rename & Upload ──────────────────────────────────────
+      - name: Rename artifact
+        shell: bash
+        run: |
+          VERSION=$(jq -r .version src-tauri/tauri.conf.json)
+          BUNDLE_DIR="src-tauri/target/${{ matrix.rust-target }}/release/bundle"
+          ARTIFACT=$(find "$BUNDLE_DIR" -name "*.${{ matrix.artifact-ext }}" | head -1)
+          NEW_NAME="semantic-image-browser_${VERSION}_${{ matrix.artifact-name }}.${{ matrix.artifact-ext }}"
+          cp "$ARTIFACT" "$NEW_NAME"
+          echo "ARTIFACT_PATH=$NEW_NAME" >> "$GITHUB_ENV"
+
+      - name: Upload to release
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          body: "See the assets below to download for your platform."
+          files: ${{ env.ARTIFACT_PATH }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAURI_CONFIG: '{"bundle":{"resources":["bundled/lib/*","bundled/model/onnx/*","bundled/model/tokenizer.json"]}}'
-        with:
-          tagName: ${{ github.ref_name }}
-          releaseName: "${{ github.ref_name }}"
-          releaseBody: "See the assets below to download for your platform."
-          releaseDraft: true
-          prerelease: false
-          args: --target ${{ matrix.rust-target }} ${{ matrix.cargo-features }}
