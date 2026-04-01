@@ -38,10 +38,9 @@ jobs:
             cuda-cudart-url: https://developer.download.nvidia.com/compute/cuda/redist/cuda_cudart/windows-x86_64/cuda_cudart-windows-x86_64-12.8.90-archive.zip
             cuda-cublas-url: https://developer.download.nvidia.com/compute/cuda/redist/libcublas/windows-x86_64/libcublas-windows-x86_64-12.8.4.1-archive.zip
             cuda-cudnn-url: https://developer.download.nvidia.com/compute/cudnn/redist/cudnn/windows-x86_64/cudnn-windows-x86_64-9.19.0.56_cuda12-archive.zip
-            cuda-lib-glob: "*.dll"
             artifact-name: windows-gpu-cuda
-            artifact-ext: msi
-            bundle-target: msi
+            artifact-ext: exe
+            bundle-target: nsis
 
           # ── macOS ────────────────────────────────────────────────
           - name: macOS ARM64 (CoreML)
@@ -138,7 +137,7 @@ jobs:
             curl -L -o cudart.tar.xz "${{ matrix.cuda-cudart-url }}"
             mkdir cudart && tar xf cudart.tar.xz -C cudart --strip-components=1
           fi
-          find cudart -name "${{ matrix.cuda-lib-glob }}" -exec cp {} "$GITHUB_WORKSPACE/src-tauri/bundled/lib/" \;
+          find cudart -name "cudart64_12.dll" -exec cp {} "$GITHUB_WORKSPACE/src-tauri/bundled/lib/" \;
 
           # cublas
           if [[ "${{ matrix.cuda-cublas-url }}" == *.zip ]]; then
@@ -148,7 +147,9 @@ jobs:
             curl -L -o cublas.tar.xz "${{ matrix.cuda-cublas-url }}"
             mkdir cublas && tar xf cublas.tar.xz -C cublas --strip-components=1
           fi
-          find cublas -name "${{ matrix.cuda-lib-glob }}" -exec cp {} "$GITHUB_WORKSPACE/src-tauri/bundled/lib/" \;
+          for dll in cublas64_12.dll cublasLt64_12.dll; do
+            find cublas -name "$dll" -exec cp {} "$GITHUB_WORKSPACE/src-tauri/bundled/lib/" \;
+          done
 
           # cudnn
           if [[ "${{ matrix.cuda-cudnn-url }}" == *.zip ]]; then
@@ -158,7 +159,9 @@ jobs:
             curl -L -o cudnn.tar.xz "${{ matrix.cuda-cudnn-url }}"
             mkdir cudnn && tar xf cudnn.tar.xz -C cudnn --strip-components=1
           fi
-          find cudnn -name "${{ matrix.cuda-lib-glob }}" -exec cp {} "$GITHUB_WORKSPACE/src-tauri/bundled/lib/" \;
+          for dll in cudnn64_9.dll cudnn_ops64_9.dll cudnn_cnn64_9.dll cudnn_graph64_9.dll cudnn_heuristic64_9.dll cudnn_engines_precompiled64_9.dll cudnn_engines_runtime_compiled64_9.dll; do
+            find cudnn -name "$dll" -exec cp {} "$GITHUB_WORKSPACE/src-tauri/bundled/lib/" \;
+          done
 
       - name: List bundled files
         shell: bash
