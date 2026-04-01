@@ -40,8 +40,8 @@ jobs:
             cuda-cudnn-url: https://developer.download.nvidia.com/compute/cudnn/redist/cudnn/windows-x86_64/cudnn-windows-x86_64-9.19.0.56_cuda12-archive.zip
             cuda-lib-glob: "*.dll"
             artifact-name: windows-gpu-cuda
-            artifact-ext: exe
-            bundle-target: nsis
+            artifact-ext: msi
+            bundle-target: msi
 
           # ── macOS ────────────────────────────────────────────────
           - name: macOS ARM64 (CoreML)
