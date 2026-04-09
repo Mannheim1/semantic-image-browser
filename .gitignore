@@ -49,6 +49,7 @@ tmpclaude-*-cwd
 
 # Dev notes
 mac_commands.txt
+icon_test/
 
 # Rust/Tauri
 src-tauri/target/
