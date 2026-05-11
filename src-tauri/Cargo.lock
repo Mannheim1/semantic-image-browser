@@ -8170,7 +8170,7 @@ dependencies = [
 
 [[package]]
 name = "semantic-image-browser"
-version = "0.2.3"
+version = "0.2.7"
 dependencies = [
  "arrow-array",
  "arrow-schema",

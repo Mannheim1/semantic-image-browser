@@ -1,6 +1,6 @@
 {
   "name": "semantic-image-browser",
-  "version": "0.2.3",
+  "version": "0.2.7",
   "description": "Zero-setup desktop app for local natural language image search using vector embeddings",
   "type": "module",
   "scripts": {
