@@ -12,6 +12,8 @@ mod database;
 mod embedding;
 mod image_ops;
 mod menu;
+#[cfg(feature = "backend-cuda")]
+mod runtime_deps;
 mod scan;
 mod state;
 mod thumbnail;
@@ -434,6 +436,8 @@ fn get_dependency_paths(app: AppHandle) -> Vec<(String, String)> {
     let bundled = bundled_dir(&app);
     let lib_dir = bundled.join("lib");
     let model_path = bundled.join("model");
+    #[cfg(feature = "backend-cuda")]
+    let runtime_path = runtime_deps::cuda_runtime_dir(&app).ok();
 
     let status = |p: &Path| -> String {
         if p.exists() {
@@ -443,10 +447,18 @@ fn get_dependency_paths(app: AppHandle) -> Vec<(String, String)> {
         }
     };
 
-    /// Check for a library in the bundled lib dir first, then search PATH.
-    /// Only used by backends that require extra provider DLLs (e.g. CUDA).
+    /// Look up a library: runtime cache (downloaded) → bundled/lib (dev) →
+    /// PATH (system fallback, shown for diagnostic visibility only — note that
+    /// the production DLL loader no longer searches PATH, so a "(system)" label
+    /// here on a CUDA build means the runtime download did not populate the cache).
     #[allow(dead_code)]
-    fn find_lib(lib_dir: &Path, filename: &str) -> String {
+    fn find_lib(runtime: Option<&Path>, lib_dir: &Path, filename: &str) -> String {
+        if let Some(runtime) = runtime {
+            let p = runtime.join(filename);
+            if p.exists() {
+                return format!("{} (downloaded)", p.display());
+            }
+        }
         let bundled_path = lib_dir.join(filename);
         if bundled_path.exists() {
             return bundled_path.display().to_string();
@@ -479,8 +491,9 @@ fn get_dependency_paths(app: AppHandle) -> Vec<(String, String)> {
     // Backend-specific provider libraries
     #[cfg(feature = "backend-cuda")]
     {
-        deps.push(("ORT CUDA Provider".into(), find_lib(&lib_dir, if cfg!(target_os = "windows") { "onnxruntime_providers_cuda.dll" } else { "libonnxruntime_providers_cuda.so" })));
-        deps.push(("ORT Shared Provider".into(), find_lib(&lib_dir, if cfg!(target_os = "windows") { "onnxruntime_providers_shared.dll" } else { "libonnxruntime_providers_shared.so" })));
+        let runtime_ref = runtime_path.as_deref();
+        deps.push(("ORT CUDA Provider".into(), find_lib(runtime_ref, &lib_dir, if cfg!(target_os = "windows") { "onnxruntime_providers_cuda.dll" } else { "libonnxruntime_providers_cuda.so" })));
+        deps.push(("ORT Shared Provider".into(), find_lib(runtime_ref, &lib_dir, if cfg!(target_os = "windows") { "onnxruntime_providers_shared.dll" } else { "libonnxruntime_providers_shared.so" })));
 
         if cfg!(target_os = "windows") {
             for (label, dll) in [
@@ -491,7 +504,7 @@ fn get_dependency_paths(app: AppHandle) -> Vec<(String, String)> {
                 ("cuDNN Ops", "cudnn_ops64_9.dll"),
                 ("cuDNN CNN", "cudnn_cnn64_9.dll"),
             ] {
-                deps.push((label.into(), find_lib(&lib_dir, dll)));
+                deps.push((label.into(), find_lib(runtime_ref, &lib_dir, dll)));
             }
         } else if cfg!(target_os = "linux") {
             for (label, so) in [
@@ -502,7 +515,7 @@ fn get_dependency_paths(app: AppHandle) -> Vec<(String, String)> {
                 ("cuDNN Ops", "libcudnn_ops.so.9"),
                 ("cuDNN CNN", "libcudnn_cnn.so.9"),
             ] {
-                deps.push((label.into(), find_lib(&lib_dir, so)));
+                deps.push((label.into(), find_lib(runtime_ref, &lib_dir, so)));
             }
         }
     }
@@ -680,6 +693,25 @@ pub fn run() {
 
                 println!("ORT library: {}", ort_path.display());
                 println!("Model directory: {}", model_path.display());
+
+                // CUDA builds need extra runtime DLLs (cudart, cuBLAS, cuFFT, cuDNN)
+                // that are too large to bundle in the installer. Download them on
+                // first launch into the user's local data dir; the helper prepends
+                // that dir to the process PATH so the Windows DLL loader finds the
+                // libs alongside any system-installed CUDA toolkit.
+                #[cfg(all(target_os = "windows", feature = "backend-cuda"))]
+                {
+                    match runtime_deps::ensure_cuda_runtime(&handle_for_task).await {
+                        Ok(runtime_dir) => {
+                            println!("CUDA runtime dir: {}", runtime_dir.display());
+                        }
+                        Err(e) => {
+                            eprintln!("Failed to prepare CUDA runtime: {}", e);
+                            let _ = handle_for_task.emit("model_ready", ());
+                            return;
+                        }
+                    }
+                }
 
                 // Initialize ONNX Runtime
                 if let Err(e) = embedding::init_ort(&ort_path) {

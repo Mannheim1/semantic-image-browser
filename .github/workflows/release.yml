@@ -122,8 +122,11 @@ jobs:
             "https://huggingface.co/onnx-community/siglip2-base-patch16-256-ONNX/resolve/main/tokenizer.json"
 
       # ── Download CUDA libs (CUDA variants only) ────────────────
+      # Windows CUDA build skips this — the libs are too large to fit in the
+      # installer along with cuDNN, so the app downloads them on first launch.
+      # See src-tauri/src/runtime_deps.rs.
       - name: Download CUDA redistributables
-        if: matrix.cuda
+        if: matrix.cuda && runner.os != 'Windows'
         shell: bash
         run: |
           mkdir -p src-tauri/bundled/lib

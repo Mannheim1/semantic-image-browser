@@ -44,6 +44,13 @@
   let scanProgress = $state<ScanProgressPayload | null>(null);
   let scanOperation = $state<"adding" | "removing">("adding");
 
+  interface DownloadProgressPayload {
+    phase: string;
+    current_bytes: number;
+    total_bytes: number;
+  }
+  let depsProgress = $state<DownloadProgressPayload | null>(null);
+
   function startScan(operation: "adding" | "removing") {
     scanOperation = operation;
     isScanning = true;
@@ -92,8 +99,16 @@
   // Similar search state - when set, we're showing results similar to this image
   let similarToImage = $state<ImageInfo | null>(null);
 
+  function formatMB(bytes: number): string {
+    return (bytes / 1_048_576).toFixed(0);
+  }
+
   let searchBarPlaceholder = $derived(
-    modelLoading
+    depsProgress && depsProgress.phase !== "done"
+      ? depsProgress.total_bytes > 0
+        ? `${depsProgress.phase} (${formatMB(depsProgress.current_bytes)}/${formatMB(depsProgress.total_bytes)} MB)...`
+        : `${depsProgress.phase}...`
+      : modelLoading
       ? "Loading model..."
       : isScanning
         ? `${scanOperation === "removing" ? "Removing" : "Adding"} ${scanProgress?.current ?? 0}/${scanProgress?.total ?? 0} images...`
@@ -470,7 +485,12 @@
 
     const unlistenModelReadyPromise = listen<void>("model_ready", async () => {
       modelLoading = false;
+      depsProgress = null;
       embeddingModelLoaded = await invoke("get_embedding_model_status");
+    });
+
+    const unlistenDepsPromise = listen<DownloadProgressPayload>("runtime_deps_progress", (event) => {
+      depsProgress = event.payload.phase === "done" ? null : event.payload;
     });
 
     const unlistenDirsChangedPromise = listen<void>("directories-changed", () => {
@@ -486,6 +506,7 @@
       unlistenScanPromise.then((unlisten) => unlisten());
       unlistenMenuPromise.then((unlisten) => unlisten());
       unlistenModelReadyPromise.then((unlisten) => unlisten());
+      unlistenDepsPromise.then((unlisten) => unlisten());
       unlistenDirsChangedPromise.then((unlisten) => unlisten());
     };
   });

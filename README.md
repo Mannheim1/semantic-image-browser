@@ -12,11 +12,12 @@ This app stores its data in `C:\Users\<your-username>\AppData\Local\com.mannheim
 
 ## Usage
 
-1. Add a folder by clicking **File → Add Folder**. This adds all images in the folder (excluding subfolders) to semantic-image-browser's database.
-2. Wait for indexing to complete. Large folders may take a while to add.
-3. Type any query in the search bar and the app will show you the images in its database that are closest to the query.
-4. View which folders are in the database by clicking **File → Manage Folders**.
-5. Remove a folder by clicking the X next to the name of the folder you wish to remove.
+1. Wait for CUDA dependencies to download an install if running CUDA version
+2. Add a folder by clicking **File → Add Folder**. This adds all images in the folder (excluding subfolders) to semantic-image-browser's database.
+3. Wait for indexing to complete. Large folders may take a while to add.
+4. Type any query in the search bar and the app will show you the images in its database that are closest to the query.
+5. View which folders are in the database by clicking **File → Manage Folders**.
+6. Remove a folder by clicking the X next to the name of the folder you wish to remove.
 
 Additional usage information can be found by clicking **Help → View Controls**.
 
