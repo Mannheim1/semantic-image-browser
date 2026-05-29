@@ -97,6 +97,21 @@
   // Similar search state - when set, we're showing results similar to this image
   let similarToImage = $state<ImageInfo | null>(null);
 
+  // Search history (RAM only, not persisted). Each entry is a full snapshot of a
+  // searched state so undo/redo can restore exact results without re-querying.
+  interface SearchSnapshot {
+    searchQuery: string;
+    similarToImage: ImageInfo | null;
+    sortField: SortField;
+    sortAscending: boolean;
+    images: ImageInfo[];
+  }
+  let searchHistory = $state<SearchSnapshot[]>([]);
+  let historyIndex = $state(-1);
+  let isNavigatingHistory = false;
+  let canUndo = $derived(historyIndex > 0);
+  let canRedo = $derived(historyIndex < searchHistory.length - 1);
+
   function formatMB(bytes: number): string {
     return (bytes / 1_048_576).toFixed(0);
   }
@@ -178,6 +193,7 @@
       if (requestId !== latestSearchRequestId) return;
       images = nextImages;
       await loadThumbnails(nextImages);
+      recordHistory();
     } catch (e) {
       console.error("Search failed:", e);
     } finally {
@@ -201,6 +217,7 @@
       if (requestId !== latestSearchRequestId) return;
       images = nextImages;
       await loadThumbnails(nextImages);
+      recordHistory();
     } catch (e) {
       console.error("Random search failed:", e);
     } finally {
@@ -219,6 +236,53 @@
 
     if (searchTimeout) clearTimeout(searchTimeout);
     searchTimeout = setTimeout(() => search(value), 300);
+  }
+
+  function recordHistory() {
+    if (isNavigatingHistory) return;
+    const snapshot: SearchSnapshot = {
+      searchQuery,
+      similarToImage,
+      sortField,
+      sortAscending,
+      images,
+    };
+    // Drop any redo entries ahead of the current position, then append.
+    searchHistory = [...searchHistory.slice(0, historyIndex + 1), snapshot];
+    historyIndex = searchHistory.length - 1;
+  }
+
+  async function applySnapshot(snapshot: SearchSnapshot) {
+    isNavigatingHistory = true;
+    if (searchTimeout) {
+      clearTimeout(searchTimeout);
+      searchTimeout = null;
+    }
+    // Invalidate any in-flight search so its results don't overwrite ours.
+    latestSearchRequestId++;
+    closePanel();
+    selectedIndex = null;
+    selectedImage = null;
+    searchQuery = snapshot.searchQuery;
+    similarToImage = snapshot.similarToImage;
+    sortField = snapshot.sortField;
+    sortAscending = snapshot.sortAscending;
+    images = snapshot.images;
+    await loadThumbnails(snapshot.images);
+    scrollToIndex(null);
+    isNavigatingHistory = false;
+  }
+
+  function undo() {
+    if (!canUndo) return;
+    historyIndex--;
+    applySnapshot(searchHistory[historyIndex]);
+  }
+
+  function redo() {
+    if (!canRedo) return;
+    historyIndex++;
+    applySnapshot(searchHistory[historyIndex]);
   }
 
   async function loadInitialData() {
@@ -344,6 +408,7 @@
       images = await invoke("search_similar_images", { imagePath: img.path });
       similarToImage = img;
       await loadThumbnails(images);
+      recordHistory();
     } catch (e) {
       console.error("Find similar failed:", e);
       alert("Failed to find similar images: " + String(e));
@@ -640,6 +705,28 @@
 
 <div class="app">
   <header class="toolbar">
+    <button
+      class="nav-button"
+      onclick={undo}
+      disabled={!canUndo || searchBarDisabled}
+      title="Back"
+      aria-label="Back"
+    >
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M15 18l-6-6 6-6" />
+      </svg>
+    </button>
+    <button
+      class="nav-button"
+      onclick={redo}
+      disabled={!canRedo || searchBarDisabled}
+      title="Forward"
+      aria-label="Forward"
+    >
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M9 18l6-6-6-6" />
+      </svg>
+    </button>
     <div class="search-wrapper">
       <input
         type="text"
@@ -778,6 +865,36 @@
     background: var(--bg-toolbar);
     border-bottom: 1px solid var(--border-color);
     flex-shrink: 0;
+  }
+
+  .nav-button {
+    width: 34px;
+    height: 34px;
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    background: var(--bg-base);
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    color: var(--text-primary);
+    cursor: pointer;
+    box-sizing: border-box;
+  }
+
+  .nav-button svg {
+    width: 16px;
+    height: 16px;
+  }
+
+  .nav-button:hover:not(:disabled) {
+    border-color: #5a5250;
+  }
+
+  .nav-button:disabled {
+    cursor: not-allowed;
+    opacity: 0.4;
   }
 
   .search-input {
