@@ -572,28 +572,6 @@
         sortAscending = false;
         search(searchQuery);
         break;
-      case "compute_clusters":
-        try {
-          await invoke("compute_clusters");
-          await message("Clusters computed. Open Cluster → Browse Clusters to view.", { title: "Cluster computation" });
-        } catch (e) {
-          await message(String(e), { title: "Cluster computation failed", kind: "error" });
-        }
-        break;
-      case "compute_umap":
-        try {
-          await invoke("compute_umap");
-          await message("2D Map computed. Open Cluster → Show 2D Map to view.", { title: "2D Map" });
-        } catch (e) {
-          await message(String(e), { title: "2D Map failed", kind: "error" });
-        }
-        break;
-      case "browse_clusters":
-        invoke("open_popup", { route: "/clusters", title: "Browse Clusters", width: 900, height: 700, resizable: true });
-        break;
-      case "show_map":
-        invoke("open_popup", { route: "/map", title: "2D Map", width: 900, height: 700, resizable: true });
-        break;
       case "toggle_benchmarking":
         invoke("toggle_benchmarking");
         break;

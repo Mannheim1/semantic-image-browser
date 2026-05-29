@@ -7,7 +7,6 @@ use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_opener::OpenerExt;
 
 mod benchmark;
-mod clustering;
 mod config;
 mod database;
 mod embedding;
@@ -381,38 +380,7 @@ async fn clear_database(app: AppHandle, state: tauri::State<'_, AppState>) -> Re
     // Recreate the table so the shared state remains valid
     *table = database::get_or_create_table(&state.db).await?;
 
-    // Stale cluster/UMAP files would point at deleted paths.
-    clustering::clear_cached_results(&app);
-
     Ok(())
-}
-
-#[tauri::command]
-async fn compute_clusters(
-    app: AppHandle,
-    state: tauri::State<'_, AppState>,
-) -> Result<clustering::ClusterResult, String> {
-    let table = state.table.lock().await;
-    clustering::compute_clusters(&app, &table).await
-}
-
-#[tauri::command]
-async fn compute_umap(
-    app: AppHandle,
-    state: tauri::State<'_, AppState>,
-) -> Result<clustering::UmapResult, String> {
-    let table = state.table.lock().await;
-    clustering::compute_umap(&app, &table).await
-}
-
-#[tauri::command]
-fn get_cluster_result(app: AppHandle) -> Result<Option<clustering::ClusterResult>, String> {
-    clustering::load_cluster_result(&app)
-}
-
-#[tauri::command]
-fn get_umap_result(app: AppHandle) -> Result<Option<clustering::UmapResult>, String> {
-    clustering::load_umap_result(&app)
 }
 
 #[tauri::command]
@@ -811,10 +779,6 @@ pub fn run() {
             show_in_folder,
             delete_all_thumbnails,
             clear_database,
-            compute_clusters,
-            compute_umap,
-            get_cluster_result,
-            get_umap_result,
             open_app_data_folder,
             toggle_benchmarking,
             toggle_slow_scan,
