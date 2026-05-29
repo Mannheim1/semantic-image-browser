@@ -684,6 +684,49 @@ pub async fn get_image_embedding(table: &Table, path: &str) -> Result<Option<Vec
     Ok(None)
 }
 
+/// Fetch the slot-1 embedding for every image that has one, paired with its path.
+///
+/// Used by the clustering pipeline. Rows without an embedding (e.g. failed
+/// indexing) are skipped rather than erroring.
+pub async fn get_all_embeddings(table: &Table) -> Result<Vec<(String, Vec<f32>)>, String> {
+    use arrow_array::FixedSizeListArray;
+
+    let batches: Vec<RecordBatch> = table
+        .query()
+        .select(lancedb::query::Select::Columns(vec![
+            "path".to_string(),
+            "embedding_1".to_string(),
+        ]))
+        .execute()
+        .await
+        .map_err(|e: lancedb::Error| e.to_string())?
+        .try_collect()
+        .await
+        .map_err(|e: lancedb::Error| e.to_string())?;
+
+    let mut out = Vec::new();
+    for batch in batches {
+        let path_col = batch.column_by_name("path").ok_or("path not found")?
+            .as_any().downcast_ref::<StringArray>().ok_or("path not string")?;
+        let emb_col = batch.column_by_name("embedding_1").ok_or("embedding_1 not found")?
+            .as_any().downcast_ref::<FixedSizeListArray>().ok_or("embedding_1 not a fixed size list")?;
+
+        for i in 0..batch.num_rows() {
+            if emb_col.is_null(i) {
+                continue;
+            }
+            let value_array = emb_col.value(i);
+            let values = value_array
+                .as_any()
+                .downcast_ref::<Float32Array>()
+                .ok_or("embedding values are not f32")?;
+            let embedding: Vec<f32> = values.iter().filter_map(|v| v).collect();
+            out.push((path_col.value(i).to_string(), embedding));
+        }
+    }
+    Ok(out)
+}
+
 pub async fn search_by_embedding(
     table: &Table,
     query_embedding: &[f32],

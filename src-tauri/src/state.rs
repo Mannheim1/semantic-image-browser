@@ -136,4 +136,7 @@ pub struct AppState {
     pub config: RwLock<AppConfig>,
     /// Thumbnails directory path, computed once at startup.
     pub thumbnails_dir: PathBuf,
+    /// Most recent clustering result, populated by the button-triggered
+    /// `compute_clusters` command and read by the cluster browser / 2D map views.
+    pub clusters: RwLock<Option<crate::cluster::ClusterResult>>,
 }

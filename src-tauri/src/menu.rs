@@ -78,6 +78,19 @@ pub fn build_menu(app: &mut tauri::App, config: &AppConfig) -> Result<Menu<Wry>,
             .build()?)
         .build()?;
 
+    // ── Clusters menu ───────────────────────────────────────────────────────
+    #[cfg(target_os = "macos")]
+    let compute_clusters_label = "Compute Clusters";
+    #[cfg(not(target_os = "macos"))]
+    let compute_clusters_label = "&Compute Clusters";
+
+    let clusters_menu = SubmenuBuilder::new(app, "C&lusters")
+        .item(&MenuItemBuilder::new(compute_clusters_label).id("compute_clusters").build(app)?)
+        .separator()
+        .item(&MenuItemBuilder::new("Cluster &Browser").id("view_cluster_browser").build(app)?)
+        .item(&MenuItemBuilder::new("2D &Map").id("view_cluster_map").build(app)?)
+        .build()?;
+
     // ── Help menu ───────────────────────────────────────────────────────────
     let help_menu = {
         #[cfg(not(target_os = "macos"))]
@@ -111,13 +124,13 @@ pub fn build_menu(app: &mut tauri::App, config: &AppConfig) -> Result<Menu<Wry>,
         #[cfg(target_os = "macos")]
         let m = MenuBuilder::new(app)
             // TODO: Re-add the View menu and give its buttons real functionality eventually.
-            .items(&[&app_menu, &file_menu, &search_menu, &help_menu, &debug_menu])
+            .items(&[&app_menu, &file_menu, &search_menu, &clusters_menu, &help_menu, &debug_menu])
             .build()?;
 
         #[cfg(not(target_os = "macos"))]
         let m = MenuBuilder::new(app)
             // TODO: Re-add the View menu and give its buttons real functionality eventually.
-            .items(&[&file_menu, &search_menu, &help_menu, &debug_menu])
+            .items(&[&file_menu, &search_menu, &clusters_menu, &help_menu, &debug_menu])
             .build()?;
 
         m
@@ -125,13 +138,13 @@ pub fn build_menu(app: &mut tauri::App, config: &AppConfig) -> Result<Menu<Wry>,
         #[cfg(target_os = "macos")]
         let m = MenuBuilder::new(app)
             // TODO: Re-add the View menu and give its buttons real functionality eventually.
-            .items(&[&app_menu, &file_menu, &search_menu, &help_menu])
+            .items(&[&app_menu, &file_menu, &search_menu, &clusters_menu, &help_menu])
             .build()?;
 
         #[cfg(not(target_os = "macos"))]
         let m = MenuBuilder::new(app)
             // TODO: Re-add the View menu and give its buttons real functionality eventually.
-            .items(&[&file_menu, &search_menu, &help_menu])
+            .items(&[&file_menu, &search_menu, &clusters_menu, &help_menu])
             .build()?;
 
         m

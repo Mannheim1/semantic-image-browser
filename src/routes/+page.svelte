@@ -74,6 +74,32 @@
 
 
   let zoomLevel = $state(1);
+  let isClustering = $state(false);
+
+  interface ClusterSummary {
+    num_clusters: number;
+    num_noise: number;
+    num_images: number;
+  }
+
+  async function computeClusters() {
+    if (isClustering) return;
+    isClustering = true;
+    try {
+      const summary: ClusterSummary = await invoke("compute_clusters");
+      // Notify any open cluster windows to refresh from the new result.
+      await emit("clusters_ready");
+      await message(
+        `Found ${summary.num_clusters} clusters across ${summary.num_images} images ` +
+          `(${summary.num_noise} unclustered). Open Clusters → Cluster Browser or 2D Map to explore.`,
+        { title: "Clusters" }
+      );
+    } catch (e) {
+      await message(`Clustering failed: ${e}`, { title: "Clusters", kind: "error" });
+    } finally {
+      isClustering = false;
+    }
+  }
 
   // Sort state
   type SortField = "relevance" | "created_at" | "modified_at" | "file_size";
@@ -123,6 +149,8 @@
         : `${depsProgress.phase}...`
       : modelLoading
       ? "Loading model..."
+      : isClustering
+      ? "Computing clusters..."
       : isScanning
         ? `${scanOperation === "removing" ? "Removing" : "Adding"} ${scanProgress?.current ?? 0}/${scanProgress?.total ?? 0} images...`
         : similarToImage
@@ -130,7 +158,7 @@
           : `Search ${indexedCount} images...`
   );
 
-  let searchBarDisabled = $derived(isScanning || modelLoading);
+  let searchBarDisabled = $derived(isScanning || modelLoading || isClustering);
 
   // Debounce timer
   let searchTimeout: ReturnType<typeof setTimeout> | null = null;
@@ -619,6 +647,15 @@
         break;
       case "random_search":
         randomSearch();
+        break;
+      case "compute_clusters":
+        computeClusters();
+        break;
+      case "view_cluster_browser":
+        invoke("open_popup", { route: "/clusters", title: "Cluster Browser", width: 900, height: 650, resizable: true });
+        break;
+      case "view_cluster_map":
+        invoke("open_popup", { route: "/cluster-map", title: "2D Map", width: 820, height: 720, resizable: true });
         break;
       case "sort_relevance":
         sortField = "relevance";

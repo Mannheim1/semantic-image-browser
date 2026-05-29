@@ -7,6 +7,7 @@ use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_opener::OpenerExt;
 
 mod benchmark;
+mod cluster;
 mod config;
 mod database;
 mod embedding;
@@ -655,6 +656,49 @@ async fn open_popup(
     Ok(())
 }
 
+/// Compute (or recompute) clusters from the indexed image embeddings.
+///
+/// Button-triggered, never automatic. Runs the PaCMAP + HDBSCAN pipeline on a
+/// blocking thread, caches the full result in app state, and returns a small
+/// summary to the caller. The cached result is served to the cluster browser
+/// and 2D map views via `get_cluster_result`.
+#[tauri::command]
+async fn compute_clusters(
+    state: tauri::State<'_, AppState>,
+) -> Result<cluster::ClusterSummary, String> {
+    let data = {
+        let table = state.table.lock().await;
+        database::get_all_embeddings(&table).await?
+    };
+
+    // PaCMAP + HDBSCAN are CPU-bound; keep them off the async runtime.
+    let result = tauri::async_runtime::spawn_blocking(move || cluster::compute(data))
+        .await
+        .map_err(|e| format!("Clustering task failed: {}", e))??;
+
+    let summary = cluster::ClusterSummary {
+        num_clusters: result.num_clusters,
+        num_noise: result.num_noise,
+        num_images: result.points.len(),
+    };
+
+    if let Ok(mut guard) = state.clusters.write() {
+        *guard = Some(result);
+    }
+
+    Ok(summary)
+}
+
+/// Return the most recently computed clustering result, or `None` if clusters
+/// have not been computed yet this session.
+#[tauri::command]
+async fn get_cluster_result(
+    state: tauri::State<'_, AppState>,
+) -> Result<Option<cluster::ClusterResult>, String> {
+    let guard = state.clusters.read().map_err(|_| "cluster lock poisoned".to_string())?;
+    Ok(guard.clone())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -699,6 +743,7 @@ pub fn run() {
                 model_id: RwLock::new(None),
                 config: RwLock::new(cfg.clone()),
                 thumbnails_dir,
+                clusters: RwLock::new(None),
             });
 
             // Phase 2: Heavy initialization (embedding models) - runs in background
@@ -805,7 +850,9 @@ pub fn run() {
             get_build_variant,
             get_dependency_paths,
             test_bundle_urls,
-            open_popup
+            open_popup,
+            compute_clusters,
+            get_cluster_result
         ])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::Destroyed = event {
