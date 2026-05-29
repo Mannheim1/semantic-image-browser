@@ -526,9 +526,31 @@ pub async fn get_initial_images(table: &Table) -> Result<Vec<ImageInfo>, String>
 }
 
 /// Returns up to `count` images chosen at random from the whole table.
+///
+/// Samples distinct dataset row offsets in `[0, total)` and fetches only those
+/// rows via `take_offsets`, so cost scales with `count` rather than table size.
+/// Row offsets are valid only for the current table version (LanceDB recomputes
+/// them after edits), which is fine since we sample against a fresh count.
 pub async fn get_random_images(table: &Table, count: usize) -> Result<Vec<ImageInfo>, String> {
+    let total = table
+        .count_rows(None)
+        .await
+        .map_err(|e: lancedb::Error| e.to_string())?;
+
+    if total == 0 {
+        return Ok(Vec::new());
+    }
+
+    let offsets: Vec<u64> = {
+        let mut rng = rand::rng();
+        rand::seq::index::sample(&mut rng, total, count.min(total))
+            .into_iter()
+            .map(|i| i as u64)
+            .collect()
+    };
+
     let batches: Vec<RecordBatch> = table
-        .query()
+        .take_offsets(offsets)
         .select(image_info_columns())
         .execute()
         .await
@@ -537,14 +559,7 @@ pub async fn get_random_images(table: &Table, count: usize) -> Result<Vec<ImageI
         .await
         .map_err(|e: lancedb::Error| e.to_string())?;
 
-    let mut images = extract_image_infos_from_batches(batches)?;
-
-    use rand::seq::SliceRandom;
-    let mut rng = rand::rng();
-    images.shuffle(&mut rng);
-    images.truncate(count);
-
-    Ok(images)
+    extract_image_infos_from_batches(batches)
 }
 
 fn extract_search_results_from_batches(batches: Vec<RecordBatch>) -> Result<Vec<SearchResult>, String> {
