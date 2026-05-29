@@ -53,19 +53,12 @@ pub fn build_menu(app: &mut tauri::App, config: &AppConfig) -> Result<Menu<Wry>,
 
     // ── Search menu ─────────────────────────────────────────────────────────
     #[cfg(target_os = "macos")]
-    let lexical_ocr_label = "Lexical OCR";
+    let random_label = "Random";
     #[cfg(not(target_os = "macos"))]
-    let lexical_ocr_label = "&Lexical OCR";
+    let random_label = "&Random";
 
-    #[cfg(target_os = "macos")]
-    let semantic_ocr_label = "Semantic OCR";
-    #[cfg(not(target_os = "macos"))]
-    let semantic_ocr_label = "&Semantic OCR";
-
-    // TODO: Ungrey/enable OCR toggles when the spec sheet's designated stage is reached.
     let search_menu = SubmenuBuilder::new(app, "&Search")
-        .item(&CheckMenuItemBuilder::new(lexical_ocr_label).id("ocr_lexical").checked(false).enabled(false).build(app)?)
-        .item(&CheckMenuItemBuilder::new(semantic_ocr_label).id("ocr_semantic").checked(false).enabled(false).build(app)?)
+        .item(&MenuItemBuilder::new(random_label).id("random_search").build(app)?)
         .separator()
         .item(&SubmenuBuilder::new(app, "Sort &by...")
             .item(&MenuItemBuilder::new("&Relevance").id("sort_relevance").build(app)?)

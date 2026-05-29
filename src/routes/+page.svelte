@@ -70,8 +70,6 @@
   let gridContainerEl: HTMLElement | null = null;
   let imageCellEls = $state<(HTMLButtonElement | null)[]>([]);
 
-  let ocrLexical = $state(false);
-  let ocrSemantic = $state(false);
   let skipNextDirsChanged = false;
 
 
@@ -182,6 +180,29 @@
       await loadThumbnails(nextImages);
     } catch (e) {
       console.error("Search failed:", e);
+    } finally {
+      if (requestId === latestSearchRequestId) {
+        isLoading = false;
+      }
+    }
+  }
+
+  async function randomSearch() {
+    const requestId = ++latestSearchRequestId;
+    closePanel();
+    selectedIndex = null;
+    selectedImage = null;
+    scrollToIndex(null);
+    similarToImage = null;
+    searchQuery = "";
+    isLoading = true;
+    try {
+      const nextImages: ImageInfo[] = await invoke("get_random_images");
+      if (requestId !== latestSearchRequestId) return;
+      images = nextImages;
+      await loadThumbnails(nextImages);
+    } catch (e) {
+      console.error("Random search failed:", e);
     } finally {
       if (requestId === latestSearchRequestId) {
         isLoading = false;
@@ -531,11 +552,8 @@
       case "clear_database":
         clearDatabase();
         break;
-      case "ocr_lexical":
-        ocrLexical = !ocrLexical;
-        break;
-      case "ocr_semantic":
-        ocrSemantic = !ocrSemantic;
+      case "random_search":
+        randomSearch();
         break;
       case "sort_relevance":
         sortField = "relevance";

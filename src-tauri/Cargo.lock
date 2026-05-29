@@ -8185,6 +8185,7 @@ dependencies = [
  "ndarray 0.17.2",
  "ort",
  "png 0.18.0",
+ "rand 0.9.2",
  "rayon",
  "reqwest",
  "serde",

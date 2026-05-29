@@ -472,24 +472,18 @@ fn build_filter_predicate(filter: &FilterOptions) -> Result<Option<String>, Stri
     }
 }
 
-pub async fn get_initial_images(table: &Table) -> Result<Vec<ImageInfo>, String> {
-    let batches: Vec<RecordBatch> = table
-        .query()
-        .select(lancedb::query::Select::Columns(vec![
-            "path".to_string(),
-            "file_type".to_string(),
-            "file_size".to_string(),
-            "created_at".to_string(),
-            "modified_at".to_string(),
-        ]))
-        .limit(100)
-        .execute()
-        .await
-        .map_err(|e: lancedb::Error| e.to_string())?
-        .try_collect()
-        .await
-        .map_err(|e: lancedb::Error| e.to_string())?;
+/// Column set selected when loading plain image metadata (no embeddings).
+fn image_info_columns() -> lancedb::query::Select {
+    lancedb::query::Select::Columns(vec![
+        "path".to_string(),
+        "file_type".to_string(),
+        "file_size".to_string(),
+        "created_at".to_string(),
+        "modified_at".to_string(),
+    ])
+}
 
+fn extract_image_infos_from_batches(batches: Vec<RecordBatch>) -> Result<Vec<ImageInfo>, String> {
     let mut images = Vec::new();
     for batch in batches {
         let path_col = batch.column_by_name("path").ok_or("path not found")?
@@ -513,6 +507,42 @@ pub async fn get_initial_images(table: &Table) -> Result<Vec<ImageInfo>, String>
             });
         }
     }
+    Ok(images)
+}
+
+pub async fn get_initial_images(table: &Table) -> Result<Vec<ImageInfo>, String> {
+    let batches: Vec<RecordBatch> = table
+        .query()
+        .select(image_info_columns())
+        .limit(100)
+        .execute()
+        .await
+        .map_err(|e: lancedb::Error| e.to_string())?
+        .try_collect()
+        .await
+        .map_err(|e: lancedb::Error| e.to_string())?;
+
+    extract_image_infos_from_batches(batches)
+}
+
+/// Returns up to `count` images chosen at random from the whole table.
+pub async fn get_random_images(table: &Table, count: usize) -> Result<Vec<ImageInfo>, String> {
+    let batches: Vec<RecordBatch> = table
+        .query()
+        .select(image_info_columns())
+        .execute()
+        .await
+        .map_err(|e: lancedb::Error| e.to_string())?
+        .try_collect()
+        .await
+        .map_err(|e: lancedb::Error| e.to_string())?;
+
+    let mut images = extract_image_infos_from_batches(batches)?;
+
+    use rand::seq::SliceRandom;
+    let mut rng = rand::rng();
+    images.shuffle(&mut rng);
+    images.truncate(count);
 
     Ok(images)
 }

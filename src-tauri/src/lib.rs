@@ -225,6 +225,25 @@ async fn get_initial_images(state: tauri::State<'_, AppState>) -> Result<Vec<Ima
     database::get_initial_images(&table).await
 }
 
+/// Return up to 100 randomly chosen images from the database.
+#[tauri::command]
+async fn get_random_images(state: tauri::State<'_, AppState>) -> Result<Vec<database::SearchResult>, String> {
+    let table = state.table.lock().await;
+    let images = database::get_random_images(&table, 100).await?;
+    let results = images
+        .into_iter()
+        .map(|img| database::SearchResult {
+            path: img.path,
+            file_type: img.file_type,
+            file_size: img.file_size,
+            created_at: img.created_at,
+            modified_at: img.modified_at,
+            sort_score: None,
+        })
+        .collect();
+    Ok(results)
+}
+
 /// Search for images using semantic similarity if the embedding model is available,
 /// otherwise fall back to filename search.
 ///
@@ -771,6 +790,7 @@ pub fn run() {
             get_watched_directories,
             get_indexed_count,
             get_initial_images,
+            get_random_images,
             search_images,
             search_similar_images,
             search_images_filtered,
