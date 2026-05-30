@@ -89,8 +89,16 @@ pub fn compute(data: Vec<(String, Vec<f32>)>) -> Result<ClusterResult, String> {
     // Scale the minimum cluster size with the library so large collections do
     // not produce a swarm of tiny clusters, while small ones still cluster.
     let min_cluster_size = (n / 100).clamp(5, 50);
+    // `min_samples` is the density bar a point must clear to be pulled into a
+    // cluster. Left unset it defaults to `min_cluster_size`, which is strict
+    // enough to shave off border images that sit visually and semantically
+    // inside a cluster (the grey dots mixed into a coloured blob on the map).
+    // Halving it loosens *membership* — reclaiming those border images — without
+    // changing how many clusters form (`min_cluster_size` still gates that).
+    let min_samples = (min_cluster_size / 2).max(1);
     let hyper = HdbscanHyperParams::builder()
         .min_cluster_size(min_cluster_size)
+        .min_samples(min_samples)
         .dist_metric(DistanceMetric::Euclidean)
         .build();
     let labels = Hdbscan::new(&coords, hyper)
