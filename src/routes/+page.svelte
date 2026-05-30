@@ -123,11 +123,20 @@
   // Similar search state - when set, we're showing results similar to this image
   let similarToImage = $state<ImageInfo | null>(null);
 
+  // When set, the grid is showing a whole cluster (from the Cluster Browser).
+  // -1 is the "Unclustered" bucket; null means we're not in cluster view.
+  let displayedCluster = $state<number | null>(null);
+
+  function clusterLabel(cluster: number): string {
+    return cluster < 0 ? "Unclustered" : `Cluster ${cluster + 1}`;
+  }
+
   // Search history (RAM only, not persisted). Each entry is a full snapshot of a
   // searched state so undo/redo can restore exact results without re-querying.
   interface SearchSnapshot {
     searchQuery: string;
     similarToImage: ImageInfo | null;
+    displayedCluster: number | null;
     sortField: SortField;
     sortAscending: boolean;
     images: ImageInfo[];
@@ -155,7 +164,9 @@
         ? `${scanOperation === "removing" ? "Removing" : "Adding"} ${scanProgress?.current ?? 0}/${scanProgress?.total ?? 0} images...`
         : similarToImage
           ? `similar to: ${getFilename(similarToImage.path)}`
-          : `Search ${indexedCount} images...`
+          : displayedCluster !== null
+            ? `showing: ${clusterLabel(displayedCluster)}`
+            : `Search ${indexedCount} images...`
   );
 
   let searchBarDisabled = $derived(isScanning || modelLoading || isClustering);
@@ -178,6 +189,69 @@
     }));
 
     thumbnails = newThumbnails;
+  }
+
+  // ── Lazy thumbnail loading ────────────────────────────────────────────────
+  // Resolve and load a cell's thumbnail only as it nears the viewport, so the
+  // grid stays responsive no matter how many images are shown at once (e.g. a
+  // large cluster, which can far exceed the 100-result search cap). Loaded URLs
+  // are cached in `thumbnails` and reused; eager `loadThumbnails` calls elsewhere
+  // simply pre-fill that same cache for small result sets.
+  const inflightThumbs = new Set<string>();
+
+  async function ensureThumbnail(path: string) {
+    if (path in thumbnails || inflightThumbs.has(path)) return;
+    inflightThumbs.add(path);
+    try {
+      const thumbPath: string = await invoke("get_thumbnail_path", { imagePath: path });
+      thumbnails = { ...thumbnails, [path]: convertFileSrc(thumbPath) };
+    } catch {
+      thumbnails = { ...thumbnails, [path]: null };
+    } finally {
+      inflightThumbs.delete(path);
+    }
+  }
+
+  let thumbObserver: IntersectionObserver | null = null;
+  const cellPath = new WeakMap<Element, string>();
+
+  function getThumbObserver(): IntersectionObserver | null {
+    if (thumbObserver || typeof IntersectionObserver === "undefined") return thumbObserver;
+    thumbObserver = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          if (!entry.isIntersecting) continue;
+          const path = cellPath.get(entry.target);
+          if (path) ensureThumbnail(path);
+          thumbObserver?.unobserve(entry.target);
+        }
+      },
+      { rootMargin: "300px 0px" }
+    );
+    return thumbObserver;
+  }
+
+  // Svelte action: load a cell's thumbnail when it scrolls near the viewport.
+  function lazyThumb(node: HTMLElement, path: string) {
+    const observer = getThumbObserver();
+    if (!observer) {
+      ensureThumbnail(path); // No IntersectionObserver available; load eagerly.
+      return {};
+    }
+    cellPath.set(node, path);
+    observer.observe(node);
+    return {
+      update(newPath: string) {
+        if (newPath === cellPath.get(node)) return;
+        cellPath.set(node, newPath);
+        observer.unobserve(node);
+        observer.observe(node);
+      },
+      destroy() {
+        observer.unobserve(node);
+        cellPath.delete(node);
+      },
+    };
   }
 
   function buildFilterOptions() {
@@ -205,6 +279,7 @@
     selectedIndex = null;
     selectedImage = null;
     scrollToIndex(null);
+    displayedCluster = null;
     isLoading = true;
     try {
       let nextImages: ImageInfo[];
@@ -239,6 +314,7 @@
     scrollToIndex(null);
     similarToImage = null;
     searchQuery = "";
+    displayedCluster = null;
     isLoading = true;
     try {
       const nextImages: ImageInfo[] = await invoke("get_random_images");
@@ -248,6 +324,34 @@
       recordHistory();
     } catch (e) {
       console.error("Random search failed:", e);
+    } finally {
+      if (requestId === latestSearchRequestId) {
+        isLoading = false;
+      }
+    }
+  }
+
+  // Show all images in a cluster, triggered from the Cluster Browser window.
+  // Unlike search, this can return far more than the 100-result cap, so we skip
+  // the eager loadThumbnails and let the lazy IntersectionObserver fill cells in
+  // as they scroll into view.
+  async function showCluster(cluster: number) {
+    const requestId = ++latestSearchRequestId;
+    closePanel();
+    selectedIndex = null;
+    selectedImage = null;
+    scrollToIndex(null);
+    similarToImage = null;
+    searchQuery = "";
+    isLoading = true;
+    try {
+      const nextImages: ImageInfo[] = await invoke("get_cluster_images", { cluster });
+      if (requestId !== latestSearchRequestId) return;
+      images = nextImages;
+      displayedCluster = cluster;
+      recordHistory();
+    } catch (e) {
+      console.error("Show cluster failed:", e);
     } finally {
       if (requestId === latestSearchRequestId) {
         isLoading = false;
@@ -271,6 +375,7 @@
     const snapshot: SearchSnapshot = {
       searchQuery,
       similarToImage,
+      displayedCluster,
       sortField,
       sortAscending,
       images,
@@ -293,6 +398,7 @@
     selectedImage = null;
     searchQuery = snapshot.searchQuery;
     similarToImage = snapshot.similarToImage;
+    displayedCluster = snapshot.displayedCluster;
     sortField = snapshot.sortField;
     sortAscending = snapshot.sortAscending;
     images = snapshot.images;
@@ -432,6 +538,7 @@
     selectedIndex = null;
     selectedImage = null;
     isLoading = true;
+    displayedCluster = null;
     try {
       images = await invoke("search_similar_images", { imagePath: img.path });
       similarToImage = img;
@@ -616,12 +723,17 @@
       loadInitialData();
     });
 
+    const unlistenShowClusterPromise = listen<{ cluster: number }>("show-cluster", (event) => {
+      showCluster(event.payload.cluster);
+    });
+
     return () => {
       unlistenScanPromise.then((unlisten) => unlisten());
       unlistenMenuPromise.then((unlisten) => unlisten());
       unlistenModelReadyPromise.then((unlisten) => unlisten());
       unlistenDepsPromise.then((unlisten) => unlisten());
       unlistenDirsChangedPromise.then((unlisten) => unlisten());
+      unlistenShowClusterPromise.then((unlisten) => unlisten());
     };
   });
 
@@ -796,7 +908,7 @@
         </div>
       {:else}
         <div class="image-grid">
-          {#each images as img, index}
+          {#each images as img, index (img.path)}
             <button
               class="image-cell"
               class:selected={selectedImage?.path === img.path}
@@ -805,9 +917,10 @@
               ondblclick={() => openImage(img.path)}
               oncontextmenu={(e) => handleContextMenu(e, img)}
               bind:this={imageCellEls[index]}
+              use:lazyThumb={img.path}
             >
               {#if thumbnails[img.path]}
-                <img src={thumbnails[img.path]} alt="" class="thumbnail" />
+                <img src={thumbnails[img.path]} alt="" class="thumbnail" loading="lazy" />
               {:else if thumbnails[img.path] === null}
                 <div class="thumbnail-placeholder">!</div>
               {:else}

@@ -1,7 +1,7 @@
 <script lang="ts">
   import "$lib/theme.css";
   import { invoke, convertFileSrc } from "@tauri-apps/api/core";
-  import { listen } from "@tauri-apps/api/event";
+  import { emit, listen } from "@tauri-apps/api/event";
   import { onMount } from "svelte";
 
   interface ClusterPoint {
@@ -19,7 +19,9 @@
   interface ClusterGroup {
     id: number;
     label: string;
-    points: ClusterPoint[];
+    count: number;
+    // Four images sampled at random to represent the cluster on its card.
+    sample: ClusterPoint[];
   }
 
   let result = $state<ClusterResult | null>(null);
@@ -27,8 +29,13 @@
   let thumbnails = $state<Record<string, string | null>>({});
   let loading = $state(true);
 
-  function getFilename(path: string): string {
-    return path.split(/[\\/]/).pop() ?? path;
+  // Pick up to four random points to feature on a cluster card. Chosen once when
+  // the groups are built so the collage doesn't reshuffle on every redraw.
+  function sample4(points: ClusterPoint[]): ClusterPoint[] {
+    if (points.length <= 4) return points.slice();
+    const chosen = new Set<number>();
+    while (chosen.size < 4) chosen.add(Math.floor(Math.random() * points.length));
+    return [...chosen].map((i) => points[i]);
   }
 
   function buildGroups(res: ClusterResult): ClusterGroup[] {
@@ -40,14 +47,13 @@
     }
     // Real clusters first (ascending id), then the unclustered bucket last.
     const ids = [...byCluster.keys()].filter((id) => id >= 0).sort((a, b) => a - b);
-    const out: ClusterGroup[] = ids.map((id) => ({
-      id,
-      label: `Cluster ${id + 1}`,
-      points: byCluster.get(id)!,
-    }));
+    const out: ClusterGroup[] = ids.map((id) => {
+      const points = byCluster.get(id)!;
+      return { id, label: `Cluster ${id + 1}`, count: points.length, sample: sample4(points) };
+    });
     const noise = byCluster.get(-1);
     if (noise && noise.length > 0) {
-      out.push({ id: -1, label: "Unclustered", points: noise });
+      out.push({ id: -1, label: "Unclustered", count: noise.length, sample: sample4(noise) });
     }
     return out;
   }
@@ -74,7 +80,8 @@
       result = await invoke("get_cluster_result");
       if (result) {
         groups = buildGroups(result);
-        await loadThumbnails(result.points);
+        // Only the few featured images per card need thumbnails here.
+        await loadThumbnails(groups.flatMap((g) => g.sample));
       } else {
         groups = [];
       }
@@ -83,8 +90,10 @@
     }
   }
 
-  async function openImage(path: string) {
-    await invoke("open_image", { path });
+  // Tell the main window to display this cluster's images. The browser window
+  // stays open and focused so the user can hop between clusters.
+  async function openCluster(id: number) {
+    await emit("show-cluster", { cluster: id });
   }
 
   onMount(() => {
@@ -107,34 +116,32 @@
     <div class="empty">No clusters found.</div>
   {:else}
     <div class="summary">
-      {result.num_clusters} clusters · {result.num_noise} unclustered · {result.points.length} images
+      {result.num_clusters} clusters · {result.num_noise} unclustered · click a cluster to view its images
     </div>
-    {#each groups as group (group.id)}
-      <section class="cluster-section">
-        <h2 class="cluster-title">
-          {group.label}
-          <span class="count">{group.points.length}</span>
-        </h2>
-        <div class="image-grid">
-          {#each group.points as p (p.path)}
-            <button
-              class="image-cell"
-              title={p.path}
-              ondblclick={() => openImage(p.path)}
-            >
+    <div class="card-grid">
+      {#each groups as group (group.id)}
+        <button class="cluster-card" title={group.label} onclick={() => openCluster(group.id)}>
+          <div class="collage">
+            {#each group.sample as p (p.path)}
               {#if thumbnails[p.path]}
-                <img src={thumbnails[p.path]} alt="" class="thumbnail" />
+                <img src={thumbnails[p.path]} alt="" class="cell" />
               {:else if thumbnails[p.path] === null}
-                <div class="thumbnail-placeholder">!</div>
+                <div class="cell cell-empty">!</div>
               {:else}
-                <div class="thumbnail-placeholder"></div>
+                <div class="cell cell-empty"></div>
               {/if}
-              <span class="filename">{getFilename(p.path)}</span>
-            </button>
-          {/each}
-        </div>
-      </section>
-    {/each}
+            {/each}
+            {#each Array(Math.max(0, 4 - group.sample.length)) as _unused}
+              <div class="cell cell-empty"></div>
+            {/each}
+          </div>
+          <div class="card-label">
+            <span class="card-title">{group.label}</span>
+            <span class="card-count">{group.count}</span>
+          </div>
+        </button>
+      {/each}
+    </div>
   {/if}
 </div>
 
@@ -159,72 +166,73 @@
     margin-bottom: 12px;
   }
 
-  .cluster-section {
-    margin-bottom: 20px;
-  }
-
-  .cluster-title {
-    font-size: 15px;
-    margin: 0 0 8px 0;
-    padding-bottom: 4px;
-    border-bottom: 1px solid var(--border-color);
-    display: flex;
-    align-items: center;
-    gap: 8px;
-  }
-
-  .count {
-    font-size: 12px;
-    color: var(--text-secondary);
-    font-weight: normal;
-  }
-
-  .image-grid {
+  .card-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
-    gap: 2px;
+    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+    gap: 12px;
   }
 
-  .image-cell {
+  .cluster-card {
     display: flex;
     flex-direction: column;
-    align-items: center;
-    padding: 4px;
+    padding: 0;
+    background: var(--bg-toolbar);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    overflow: hidden;
     cursor: pointer;
-    background: none;
-    border: none;
     color: inherit;
     font: inherit;
+    text-align: left;
   }
 
-  .image-cell:hover {
+  .cluster-card:hover {
+    border-color: var(--text-secondary);
     background: var(--bg-hover);
   }
 
-  .thumbnail {
-    width: 100px;
-    height: 100px;
-    object-fit: cover;
-    border-radius: 2px;
+  .collage {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    grid-template-rows: 1fr 1fr;
+    gap: 1px;
+    aspect-ratio: 1;
+    width: 100%;
   }
 
-  .thumbnail-placeholder {
-    width: 100px;
-    height: 100px;
+  .cell {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+  }
+
+  .cell-empty {
     display: flex;
     align-items: center;
     justify-content: center;
-    background: var(--bg-toolbar);
+    background: var(--bg-base);
     color: var(--text-secondary);
-    border-radius: 2px;
   }
 
-  .filename {
-    margin-top: 2px;
-    font-size: 11px;
-    max-width: 100px;
+  .card-label {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 6px 8px;
+  }
+
+  .card-title {
+    font-size: 13px;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .card-count {
+    font-size: 12px;
+    color: var(--text-secondary);
+    flex-shrink: 0;
   }
 </style>

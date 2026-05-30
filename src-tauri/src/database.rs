@@ -525,6 +525,42 @@ pub async fn get_initial_images(table: &Table) -> Result<Vec<ImageInfo>, String>
     extract_image_infos_from_batches(batches)
 }
 
+/// Fetch metadata for a specific set of image paths, preserving the order of
+/// `paths`. Scans the metadata columns once and filters in memory, which avoids
+/// building a giant (and escaping-sensitive) `path IN (...)` SQL predicate.
+pub async fn get_images_by_paths(table: &Table, paths: &[String]) -> Result<Vec<ImageInfo>, String> {
+    use std::collections::HashMap;
+
+    if paths.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let batches: Vec<RecordBatch> = table
+        .query()
+        .select(image_info_columns())
+        .execute()
+        .await
+        .map_err(|e: lancedb::Error| e.to_string())?
+        .try_collect()
+        .await
+        .map_err(|e: lancedb::Error| e.to_string())?;
+
+    let mut by_path: HashMap<String, ImageInfo> = extract_image_infos_from_batches(batches)?
+        .into_iter()
+        .map(|img| (img.path.clone(), img))
+        .collect();
+
+    // Preserve the requested (cluster) order; silently drop any paths that are
+    // no longer in the table.
+    let mut out = Vec::with_capacity(paths.len());
+    for p in paths {
+        if let Some(img) = by_path.remove(p) {
+            out.push(img);
+        }
+    }
+    Ok(out)
+}
+
 /// Returns up to `count` images chosen at random from the whole table.
 ///
 /// Samples distinct dataset row offsets in `[0, total)` and fetches only those

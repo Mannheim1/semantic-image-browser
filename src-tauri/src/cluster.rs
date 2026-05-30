@@ -6,7 +6,9 @@
 //! and the cluster browser consistent: a visual blob on the map is exactly one
 //! browser cluster.
 
-use serde::Serialize;
+use std::path::Path;
+
+use serde::{Deserialize, Serialize};
 
 use hdbscan::{DistanceMetric, Hdbscan, HdbscanHyperParams};
 
@@ -15,7 +17,7 @@ use hdbscan::{DistanceMetric, Hdbscan, HdbscanHyperParams};
 const MIN_IMAGES: usize = 20;
 
 /// One image placed in the 2D projection and assigned to a cluster.
-#[derive(Clone, Serialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct ClusterPoint {
     pub path: String,
     pub x: f32,
@@ -25,7 +27,7 @@ pub struct ClusterPoint {
 }
 
 /// Full result of a clustering run, cached in app state for both views.
-#[derive(Clone, Serialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct ClusterResult {
     pub points: Vec<ClusterPoint>,
     pub num_clusters: usize,
@@ -133,4 +135,17 @@ pub fn compute(data: Vec<(String, Vec<f32>)>) -> Result<ClusterResult, String> {
         num_clusters,
         num_noise,
     })
+}
+
+/// Write a clustering result to disk as JSON so it survives between sessions.
+pub fn save(path: &Path, result: &ClusterResult) -> Result<(), String> {
+    let json = serde_json::to_vec(result).map_err(|e| e.to_string())?;
+    std::fs::write(path, json).map_err(|e| e.to_string())
+}
+
+/// Load a previously saved clustering result, if one exists. A missing or
+/// unreadable file simply yields `None` — the user can recompute.
+pub fn load(path: &Path) -> Option<ClusterResult> {
+    let bytes = std::fs::read(path).ok()?;
+    serde_json::from_slice(&bytes).ok()
 }

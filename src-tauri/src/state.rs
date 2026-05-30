@@ -138,5 +138,8 @@ pub struct AppState {
     pub thumbnails_dir: PathBuf,
     /// Most recent clustering result, populated by the button-triggered
     /// `compute_clusters` command and read by the cluster browser / 2D map views.
+    /// Persisted to `clusters_path` so it survives between sessions.
     pub clusters: RwLock<Option<crate::cluster::ClusterResult>>,
+    /// On-disk JSON cache of the most recent clustering result.
+    pub clusters_path: PathBuf,
 }

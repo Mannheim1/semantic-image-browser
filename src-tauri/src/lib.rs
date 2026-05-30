@@ -400,6 +400,12 @@ async fn clear_database(app: AppHandle, state: tauri::State<'_, AppState>) -> Re
     // Recreate the table so the shared state remains valid
     *table = database::get_or_create_table(&state.db).await?;
 
+    // Clusters reference now-deleted images; drop the cache and its on-disk copy.
+    if let Ok(mut guard) = state.clusters.write() {
+        *guard = None;
+    }
+    std::fs::remove_file(&state.clusters_path).ok();
+
     Ok(())
 }
 
@@ -682,6 +688,10 @@ async fn compute_clusters(
         num_images: result.points.len(),
     };
 
+    // Persist to disk so the result survives between sessions, then cache it.
+    if let Err(e) = cluster::save(&state.clusters_path, &result) {
+        eprintln!("Failed to save clusters to disk: {}", e);
+    }
     if let Ok(mut guard) = state.clusters.write() {
         *guard = Some(result);
     }
@@ -690,13 +700,50 @@ async fn compute_clusters(
 }
 
 /// Return the most recently computed clustering result, or `None` if clusters
-/// have not been computed yet this session.
+/// have never been computed (the result is loaded from disk at startup, so a
+/// previous session's run is available here too).
 #[tauri::command]
 async fn get_cluster_result(
     state: tauri::State<'_, AppState>,
 ) -> Result<Option<cluster::ClusterResult>, String> {
     let guard = state.clusters.read().map_err(|_| "cluster lock poisoned".to_string())?;
     Ok(guard.clone())
+}
+
+/// Return full image metadata for every image in a given cluster, drawn from the
+/// most recently computed clustering result. Used by the cluster browser to load
+/// a cluster's images into the main window. `cluster` is the 0-based cluster id,
+/// or `-1` for the unclustered bucket.
+#[tauri::command]
+async fn get_cluster_images(
+    state: tauri::State<'_, AppState>,
+    cluster: i32,
+) -> Result<Vec<database::SearchResult>, String> {
+    let paths: Vec<String> = {
+        let guard = state.clusters.read().map_err(|_| "cluster lock poisoned".to_string())?;
+        let result = guard.as_ref().ok_or("No clusters have been computed yet.")?;
+        result
+            .points
+            .iter()
+            .filter(|p| p.cluster == cluster)
+            .map(|p| p.path.clone())
+            .collect()
+    };
+
+    let table = state.table.lock().await;
+    let images = database::get_images_by_paths(&table, &paths).await?;
+    let results = images
+        .into_iter()
+        .map(|img| database::SearchResult {
+            path: img.path,
+            file_type: img.file_type,
+            file_size: img.file_size,
+            created_at: img.created_at,
+            modified_at: img.modified_at,
+            sort_score: None,
+        })
+        .collect();
+    Ok(results)
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -726,6 +773,11 @@ pub fn run() {
             // Compute thumbnails directory once (never changes)
             let thumbnails_dir = app_data.join("thumbnails");
 
+            // Persisted clustering result: load any previous run so the cluster
+            // browser / 2D map are populated immediately on launch.
+            let clusters_path = app_data.join("clusters.json");
+            let saved_clusters = cluster::load(&clusters_path);
+
             // Phase 1: Quick initialization (database only) - blocks briefly
             // This is fast and required for the app to function at all
             let (db, table) = tauri::async_runtime::block_on(async {
@@ -743,7 +795,8 @@ pub fn run() {
                 model_id: RwLock::new(None),
                 config: RwLock::new(cfg.clone()),
                 thumbnails_dir,
-                clusters: RwLock::new(None),
+                clusters: RwLock::new(saved_clusters),
+                clusters_path,
             });
 
             // Phase 2: Heavy initialization (embedding models) - runs in background
@@ -852,7 +905,8 @@ pub fn run() {
             test_bundle_urls,
             open_popup,
             compute_clusters,
-            get_cluster_result
+            get_cluster_result,
+            get_cluster_images
         ])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::Destroyed = event {
