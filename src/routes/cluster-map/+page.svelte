@@ -38,6 +38,12 @@
   const PADDING = 26;
   const DOT_RADIUS = 3;
   const HIT_RADIUS = 9;
+  // Tooltip footprint used to keep it on-screen. Matches the CSS max-width plus a
+  // generous height for the thumbnail + two text lines; only needs to be roughly
+  // right to decide which side of the cursor to draw on.
+  const TOOLTIP_W = 220;
+  const TOOLTIP_H = 84;
+  const CURSOR_GAP = 14;
   // Tukey's-fence multiplier used to crop far-flung outliers from the map.
   // Higher = more permissive (crops fewer points).
   const OUTLIER_K = 3;
@@ -191,7 +197,13 @@
         hoverThumb = null;
         loadHoverThumb(p.path);
       }
-      hovered = { path: p.path, cluster: p.cluster, x: mx, y: my };
+      // Default below-and-right of the cursor; flip to the other side when that
+      // would push the tooltip past the canvas edge so it stays fully visible.
+      let tx = mx + CURSOR_GAP;
+      if (tx + TOOLTIP_W > rect.width) tx = mx - CURSOR_GAP - TOOLTIP_W;
+      let ty = my + CURSOR_GAP;
+      if (ty + TOOLTIP_H > rect.height) ty = my - CURSOR_GAP - TOOLTIP_H;
+      hovered = { path: p.path, cluster: p.cluster, x: Math.max(0, tx), y: Math.max(0, ty) };
       canvas.style.cursor = "pointer";
     } else {
       hovered = null;
@@ -249,7 +261,7 @@
       {#if hovered}
         <div
           class="tooltip"
-          style="left: {hovered.x + 14}px; top: {hovered.y + 14}px;"
+          style="left: {hovered.x}px; top: {hovered.y}px;"
         >
           <div class="tooltip-thumb">
             {#if hoverThumb}
