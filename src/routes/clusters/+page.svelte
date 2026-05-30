@@ -194,15 +194,16 @@
   .collage {
     display: grid;
     grid-template-columns: 1fr 1fr;
-    grid-template-rows: 1fr 1fr;
     gap: 1px;
-    aspect-ratio: 1;
     width: 100%;
   }
 
+  /* Each cell sets its OWN square via aspect-ratio (same pattern as the main
+     image grid). The two rows then auto-size to those squares, so the collage
+     is square overall — no dependence on the container's height. */
   .cell {
     width: 100%;
-    height: 100%;
+    aspect-ratio: 1;
     object-fit: cover;
     display: block;
   }
