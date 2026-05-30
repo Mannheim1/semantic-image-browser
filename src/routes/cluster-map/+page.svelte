@@ -32,11 +32,15 @@
 
   let hovered = $state<{ path: string; cluster: number; x: number; y: number } | null>(null);
   let hoverThumb = $state<string | null>(null);
+  let croppedCount = $state(0);
   const thumbCache = new Map<string, string | null>();
 
   const PADDING = 26;
   const DOT_RADIUS = 3;
   const HIT_RADIUS = 9;
+  // Tukey's-fence multiplier used to crop far-flung outliers from the map.
+  // Higher = more permissive (crops fewer points).
+  const OUTLIER_K = 3;
 
   function getFilename(path: string): string {
     return path.split(/[\\/]/).pop() ?? path;
@@ -48,6 +52,27 @@
     if (cluster < 0) return "#6a615c";
     const hue = (cluster * 137.508) % 360;
     return `hsl(${hue}, 65%, 58%)`;
+  }
+
+  // Linear-interpolated quantile of an already-sorted ascending array.
+  function quantile(sorted: number[], q: number): number {
+    if (sorted.length === 0) return 0;
+    const pos = (sorted.length - 1) * q;
+    const base = Math.floor(pos);
+    const next = sorted[base + 1];
+    return next !== undefined
+      ? sorted[base] + (pos - base) * (next - sorted[base])
+      : sorted[base];
+  }
+
+  // Robust [min, max] axis bounds via Tukey's fence: [Q1 - k·IQR, Q3 + k·IQR].
+  // Keys off the spread of the bulk of the points, so it crops "radically far"
+  // outliers regardless of how many there are.
+  function robustBounds(sorted: number[]): [number, number] {
+    const q1 = quantile(sorted, 0.25);
+    const q3 = quantile(sorted, 0.75);
+    const iqr = q3 - q1;
+    return [q1 - OUTLIER_K * iqr, q3 + OUTLIER_K * iqr];
   }
 
   function draw() {
@@ -68,8 +93,27 @@
     pixelPoints = [];
     if (!result || result.points.length === 0) return;
 
+    // Two separate jobs: Tukey's fence decides *which* points are outliers, then
+    // we frame the map to the tight bounding box of the points that survive.
+    // The fence picks what to crop; the tight box sets the zoom — so the kept
+    // points fill the canvas instead of floating in the fence's slack.
+    const xs = result.points.map((p) => p.x).sort((a, b) => a - b);
+    const ys = result.points.map((p) => p.y).sort((a, b) => a - b);
+    const [fenceMinX, fenceMaxX] = robustBounds(xs);
+    const [fenceMinY, fenceMaxY] = robustBounds(ys);
+
+    const inliers = result.points.filter(
+      (p) =>
+        p.x >= fenceMinX && p.x <= fenceMaxX &&
+        p.y >= fenceMinY && p.y <= fenceMaxY
+    );
+    croppedCount = result.points.length - inliers.length;
+    if (inliers.length === 0) return;
+
+    // Tight bounding box of the surviving points: zoom in as far as possible
+    // without clipping any of them.
     let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-    for (const p of result.points) {
+    for (const p of inliers) {
       if (p.x < minX) minX = p.x;
       if (p.x > maxX) maxX = p.x;
       if (p.y < minY) minY = p.y;
@@ -80,7 +124,7 @@
     const scaleX = (w - 2 * PADDING) / rangeX;
     const scaleY = (h - 2 * PADDING) / rangeY;
 
-    for (const p of result.points) {
+    for (const p of inliers) {
       const px = PADDING + (p.x - minX) * scaleX;
       // Flip Y so the plot reads bottom-up like a normal chart.
       const py = PADDING + (maxY - p.y) * scaleY;
@@ -190,7 +234,9 @@
     </div>
   {:else}
     <div class="summary">
-      {result.num_clusters} clusters · {result.points.length} images · hover to preview, click to open
+      {result.num_clusters} clusters · {result.points.length} images{croppedCount > 0
+        ? ` · ${croppedCount} outlier${croppedCount === 1 ? "" : "s"} off-map`
+        : ""} · hover to preview, click to open
     </div>
     <div class="canvas-wrap" bind:this={containerEl}>
       <canvas
