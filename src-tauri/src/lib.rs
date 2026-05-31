@@ -746,6 +746,29 @@ async fn get_cluster_images(
     Ok(results)
 }
 
+/// Return full image metadata for an arbitrary set of paths. Used by the 2D map's
+/// box selection, which hands back the paths of the dots inside the drawn region.
+#[tauri::command]
+async fn get_images_for_paths(
+    state: tauri::State<'_, AppState>,
+    paths: Vec<String>,
+) -> Result<Vec<database::SearchResult>, String> {
+    let table = state.table.lock().await;
+    let images = database::get_images_by_paths(&table, &paths).await?;
+    let results = images
+        .into_iter()
+        .map(|img| database::SearchResult {
+            path: img.path,
+            file_type: img.file_type,
+            file_size: img.file_size,
+            created_at: img.created_at,
+            modified_at: img.modified_at,
+            sort_score: None,
+        })
+        .collect();
+    Ok(results)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -906,7 +929,8 @@ pub fn run() {
             open_popup,
             compute_clusters,
             get_cluster_result,
-            get_cluster_images
+            get_cluster_images,
+            get_images_for_paths
         ])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::Destroyed = event {

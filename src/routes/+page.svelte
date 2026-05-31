@@ -158,6 +158,10 @@
   // -1 is the "Unclustered" bucket; null means we're not in cluster view.
   let displayedCluster = $state<number | null>(null);
 
+  // When set, the grid is showing a region the user boxed on the 2D map; the
+  // value is how many images that selection contained.
+  let displayedSelection = $state<number | null>(null);
+
   function clusterLabel(cluster: number): string {
     return cluster < 0 ? "Unclustered" : `Cluster ${cluster + 1}`;
   }
@@ -168,6 +172,7 @@
     searchQuery: string;
     similarToImage: ImageInfo | null;
     displayedCluster: number | null;
+    displayedSelection: number | null;
     sortField: SortField;
     sortAscending: boolean;
     images: ImageInfo[];
@@ -195,9 +200,11 @@
         ? `${scanOperation === "removing" ? "Removing" : "Adding"} ${scanProgress?.current ?? 0}/${scanProgress?.total ?? 0} images...`
         : similarToImage
           ? `similar to: ${getFilename(similarToImage.path)}`
-          : displayedCluster !== null
-            ? `showing: ${clusterLabel(displayedCluster)}`
-            : `Search ${indexedCount} images...`
+          : displayedSelection !== null
+            ? `showing: ${displayedSelection} selected image${displayedSelection === 1 ? "" : "s"}`
+            : displayedCluster !== null
+              ? `showing: ${clusterLabel(displayedCluster)}`
+              : `Search ${indexedCount} images...`
   );
 
   let searchBarDisabled = $derived(isScanning || modelLoading || isClustering);
@@ -311,6 +318,7 @@
     selectedImage = null;
     scrollToIndex(null);
     displayedCluster = null;
+    displayedSelection = null;
     isLoading = true;
     try {
       let nextImages: ImageInfo[];
@@ -346,6 +354,7 @@
     similarToImage = null;
     searchQuery = "";
     displayedCluster = null;
+    displayedSelection = null;
     isLoading = true;
     try {
       const nextImages: ImageInfo[] = await invoke("get_random_images");
@@ -374,6 +383,7 @@
     scrollToIndex(null);
     similarToImage = null;
     searchQuery = "";
+    displayedSelection = null;
     isLoading = true;
     try {
       const nextImages: ImageInfo[] = await invoke("get_cluster_images", { cluster });
@@ -383,6 +393,34 @@
       recordHistory();
     } catch (e) {
       console.error("Show cluster failed:", e);
+    } finally {
+      if (requestId === latestSearchRequestId) {
+        isLoading = false;
+      }
+    }
+  }
+
+  // Show an arbitrary set of images, triggered by boxing a region on the 2D map.
+  // Like showCluster, this can exceed the 100-result cap, so thumbnails fill in
+  // lazily as cells scroll into view rather than being eagerly preloaded.
+  async function showPaths(paths: string[]) {
+    const requestId = ++latestSearchRequestId;
+    closePanel();
+    selectedIndex = null;
+    selectedImage = null;
+    scrollToIndex(null);
+    similarToImage = null;
+    searchQuery = "";
+    displayedCluster = null;
+    isLoading = true;
+    try {
+      const nextImages: ImageInfo[] = await invoke("get_images_for_paths", { paths });
+      if (requestId !== latestSearchRequestId) return;
+      images = nextImages;
+      displayedSelection = nextImages.length;
+      recordHistory();
+    } catch (e) {
+      console.error("Show selection failed:", e);
     } finally {
       if (requestId === latestSearchRequestId) {
         isLoading = false;
@@ -407,6 +445,7 @@
       searchQuery,
       similarToImage,
       displayedCluster,
+      displayedSelection,
       sortField,
       sortAscending,
       images,
@@ -430,6 +469,7 @@
     searchQuery = snapshot.searchQuery;
     similarToImage = snapshot.similarToImage;
     displayedCluster = snapshot.displayedCluster;
+    displayedSelection = snapshot.displayedSelection;
     sortField = snapshot.sortField;
     sortAscending = snapshot.sortAscending;
     images = snapshot.images;
@@ -570,6 +610,7 @@
     selectedImage = null;
     isLoading = true;
     displayedCluster = null;
+    displayedSelection = null;
     try {
       images = await invoke("search_similar_images", { imagePath: img.path });
       similarToImage = img;
@@ -824,6 +865,10 @@
       showCluster(event.payload.cluster);
     });
 
+    const unlistenShowPathsPromise = listen<{ paths: string[] }>("show-paths", (event) => {
+      showPaths(event.payload.paths);
+    });
+
     return () => {
       unlistenScanPromise.then((unlisten) => unlisten());
       unlistenMenuPromise.then((unlisten) => unlisten());
@@ -831,6 +876,7 @@
       unlistenDepsPromise.then((unlisten) => unlisten());
       unlistenDirsChangedPromise.then((unlisten) => unlisten());
       unlistenShowClusterPromise.then((unlisten) => unlisten());
+      unlistenShowPathsPromise.then((unlisten) => unlisten());
     };
   });
 

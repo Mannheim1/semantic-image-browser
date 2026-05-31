@@ -1,7 +1,8 @@
 <script lang="ts">
   import "$lib/theme.css";
   import { invoke, convertFileSrc } from "@tauri-apps/api/core";
-  import { listen } from "@tauri-apps/api/event";
+  import { emit, listen } from "@tauri-apps/api/event";
+  import { confirm } from "@tauri-apps/plugin-dialog";
   import { onMount } from "svelte";
 
   interface ClusterPoint {
@@ -34,6 +35,15 @@
   let hoverThumb = $state<string | null>(null);
   let croppedCount = $state(0);
   const thumbCache = new Map<string, string | null>();
+
+  // Box selection. `dragStart` is set on mouse-down; the gesture only counts as a
+  // drag (rather than a click-to-open) once the cursor moves past DRAG_THRESHOLD.
+  let dragStart: { x: number; y: number } | null = null;
+  let dragRect = $state<{ x: number; y: number; w: number; h: number } | null>(null);
+  let isDragging = $state(false);
+  const DRAG_THRESHOLD = 5;
+  // Above this many selected images, confirm before flooding the main window.
+  const WARN_THRESHOLD = 500;
 
   const PADDING = 26;
   const DOT_RADIUS = 3;
@@ -185,7 +195,79 @@
     }
   }
 
+  function canvasPos(e: MouseEvent): { x: number; y: number } | null {
+    const canvas = canvasEl;
+    if (!canvas) return null;
+    const rect = canvas.getBoundingClientRect();
+    return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+  }
+
+  function handleMouseDown(e: MouseEvent) {
+    if (e.button !== 0) return;
+    const pos = canvasPos(e);
+    if (!pos) return;
+    dragStart = pos;
+    isDragging = false;
+    dragRect = null;
+    hovered = null;
+    hoverThumb = null;
+  }
+
+  // Window-level so a drag that runs off the canvas edge keeps tracking.
+  function handleWindowMouseMove(e: MouseEvent) {
+    if (!dragStart) return;
+    const pos = canvasPos(e);
+    if (!pos) return;
+    const dx = pos.x - dragStart.x;
+    const dy = pos.y - dragStart.y;
+    if (!isDragging && dx * dx + dy * dy > DRAG_THRESHOLD * DRAG_THRESHOLD) {
+      isDragging = true;
+    }
+    if (isDragging) {
+      dragRect = {
+        x: Math.min(dragStart.x, pos.x),
+        y: Math.min(dragStart.y, pos.y),
+        w: Math.abs(dx),
+        h: Math.abs(dy),
+      };
+    }
+  }
+
+  async function handleWindowMouseUp(e: MouseEvent) {
+    const start = dragStart;
+    const wasDragging = isDragging;
+    dragStart = null;
+    isDragging = false;
+    if (!start) return;
+
+    if (!wasDragging) {
+      // No real drag — treat as a click to open the dot under the cursor.
+      dragRect = null;
+      const p = nearestPoint(start.x, start.y);
+      if (p) await invoke("open_image", { path: p.path });
+      return;
+    }
+
+    const r = dragRect;
+    dragRect = null;
+    if (!r) return;
+
+    const paths = pixelPoints
+      .filter((p) => p.px >= r.x && p.px <= r.x + r.w && p.py >= r.y && p.py <= r.y + r.h)
+      .map((p) => p.path);
+    if (paths.length === 0) return;
+    if (paths.length > WARN_THRESHOLD) {
+      const ok = await confirm(
+        `This selection contains ${paths.length} images. Display all of them?`,
+        { title: "Large selection" }
+      );
+      if (!ok) return;
+    }
+    await emit("show-paths", { paths });
+  }
+
   function handleMouseMove(e: MouseEvent) {
+    if (dragStart) return; // mid-drag: hovering is suppressed
     const canvas = canvasEl;
     if (!canvas) return;
     const rect = canvas.getBoundingClientRect();
@@ -213,16 +295,9 @@
   }
 
   function handleMouseLeave() {
+    if (dragStart) return; // keep tooltip cleared but don't fight an active drag
     hovered = null;
     hoverThumb = null;
-  }
-
-  async function handleClick(e: MouseEvent) {
-    const canvas = canvasEl;
-    if (!canvas) return;
-    const rect = canvas.getBoundingClientRect();
-    const p = nearestPoint(e.clientX - rect.left, e.clientY - rect.top);
-    if (p) await invoke("open_image", { path: p.path });
   }
 
   onMount(() => {
@@ -237,6 +312,8 @@
   });
 </script>
 
+<svelte:window onmousemove={handleWindowMouseMove} onmouseup={handleWindowMouseUp} />
+
 <div class="map-page">
   {#if loading}
     <div class="empty">Loading map…</div>
@@ -248,15 +325,23 @@
     <div class="summary">
       {result.num_clusters} clusters · {result.points.length} images{croppedCount > 0
         ? ` · ${croppedCount} outlier${croppedCount === 1 ? "" : "s"} off-map`
-        : ""} · hover to preview, click to open
+        : ""} · click to open · drag a box to show those images
     </div>
     <div class="canvas-wrap" bind:this={containerEl}>
       <canvas
         bind:this={canvasEl}
+        class:dragging={isDragging}
         onmousemove={handleMouseMove}
         onmouseleave={handleMouseLeave}
-        onclick={handleClick}
+        onmousedown={handleMouseDown}
       ></canvas>
+
+      {#if dragRect}
+        <div
+          class="selection-box"
+          style="left: {dragRect.x}px; top: {dragRect.y}px; width: {dragRect.w}px; height: {dragRect.h}px;"
+        ></div>
+      {/if}
 
       {#if hovered}
         <div
@@ -316,6 +401,18 @@
     display: block;
     width: 100%;
     height: 100%;
+  }
+
+  canvas.dragging {
+    cursor: crosshair;
+  }
+
+  .selection-box {
+    position: absolute;
+    pointer-events: none;
+    border: 1px solid #8ab4f8;
+    background: rgba(138, 180, 248, 0.18);
+    z-index: 5;
   }
 
   .tooltip {
