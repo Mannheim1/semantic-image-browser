@@ -82,11 +82,39 @@
     num_images: number;
   }
 
+  interface ClusterPoint {
+    path: string;
+    cluster: number;
+  }
+  interface ClusterResult {
+    points: ClusterPoint[];
+    num_clusters: number;
+    num_noise: number;
+  }
+
+  // Maps each clustered image's path to its cluster id (-1 = unclustered). Empty
+  // until clusters have been computed; drives the "Show cluster" context action.
+  let clusterByPath = $state<Map<string, number>>(new Map());
+
+  async function loadClusters() {
+    try {
+      const result: ClusterResult | null = await invoke("get_cluster_result");
+      const map = new Map<string, number>();
+      if (result) {
+        for (const p of result.points) map.set(p.path, p.cluster);
+      }
+      clusterByPath = map;
+    } catch (e) {
+      console.error("Failed to load clusters:", e);
+    }
+  }
+
   async function computeClusters() {
     if (isClustering) return;
     isClustering = true;
     try {
       const summary: ClusterSummary = await invoke("compute_clusters");
+      await loadClusters();
       // Notify any open cluster windows to refresh from the new result.
       await emit("clusters_ready");
       await message(
@@ -734,6 +762,8 @@
   });
 
   onMount(() => {
+    loadClusters();
+
     const unlistenScanPromise = listen<ScanProgressPayload>("scan_progress", (event) => {
       scanProgress = event.payload;
       if (!isScanning) {
@@ -1015,6 +1045,7 @@
   </div>
 
   {#if contextMenu}
+    {@const imageCluster = clusterByPath.get(contextMenu.image.path)}
     <div
       class="context-menu"
       role="menu"
@@ -1036,6 +1067,15 @@
       >
         Find similar
       </button>
+      {#if imageCluster !== undefined}
+        <button
+          role="menuitem"
+          class="context-item"
+          onclick={() => { const c = imageCluster; closeContextMenu(); showCluster(c); }}
+        >
+          Show cluster
+        </button>
+      {/if}
     </div>
   {/if}
 
