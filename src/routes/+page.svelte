@@ -620,7 +620,49 @@
     isResizingPanel = false;
   }
 
+  // Native menu accelerators only fire on macOS; on Windows/Linux the webview
+  // swallows the keystrokes before they reach the menu. Map the same combos to
+  // menu-event IDs here and reuse handleMenuEvent so behavior stays in one place.
+  const isMac = typeof navigator !== "undefined" && /Mac/i.test(navigator.userAgent);
+
+  function matchMenuShortcut(e: KeyboardEvent): string | null {
+    // Function keys carry no modifier and behave the same on every platform.
+    if (e.key === "F1") return "view_controls";
+    if (e.key === "F11") return "toggle_fullscreen";
+
+    // macOS handles the Cmd-based accelerators natively, so skip it here to
+    // avoid firing each action twice.
+    if (isMac) return null;
+    if (!e.ctrlKey || e.altKey || e.metaKey) return null;
+
+    const key = e.key.toLowerCase();
+    if (e.shiftKey) {
+      if (key === "o") return "manage_folders";
+      if (key === "+" || key === "=") return "zoom_in"; // Ctrl+Shift+= → "+"
+      return null;
+    }
+    switch (key) {
+      case "o": return "add_folder";
+      case "r": return "rescan";
+      case "k": return "compute_clusters";
+      case "1": return "view_cluster_browser";
+      case "2": return "view_cluster_map";
+      case "0": return "reset_zoom";
+      case "=":
+      case "+": return "zoom_in";
+      case "-": return "zoom_out";
+    }
+    return null;
+  }
+
   function handleKeyDown(e: KeyboardEvent) {
+    const menuId = matchMenuShortcut(e);
+    if (menuId) {
+      e.preventDefault();
+      handleMenuEvent(menuId);
+      return;
+    }
+
     if (e.key === "Escape" && isPanelOpen) {
       e.preventDefault();
       closePanel();
