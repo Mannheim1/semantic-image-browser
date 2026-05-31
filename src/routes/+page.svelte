@@ -69,6 +69,9 @@
   let resultsRowEl: HTMLDivElement | null = null;
   let gridContainerEl: HTMLElement | null = null;
   let imageCellEls = $state<(HTMLButtonElement | null)[]>([]);
+  // Selected cell's distance from the grid's top edge, captured just before the
+  // panel toggles so we can keep it at the same on-screen height after reflow.
+  let pendingScrollAnchor: number | null = null;
 
   let skipNextDirsChanged = false;
 
@@ -623,27 +626,49 @@
     }
   }
 
+  // Vertical offset of a cell's top relative to the grid's visible top edge.
+  function cellViewportOffset(index: number | null): number | null {
+    if (index === null || !gridContainerEl) return null;
+    const cell = imageCellEls[index];
+    if (!cell) return null;
+    return cell.getBoundingClientRect().top - gridContainerEl.getBoundingClientRect().top;
+  }
+
   function navigateTo(index: number) {
     selectIndex(index);
     scrollToIndex(index);
     imageCellEls[index]?.focus();
   }
 
-  // Re-scroll selected image into view when layout changes
+  // When the panel toggles, the grid reflows (column count changes). Keep the
+  // selected image at the same on-screen height by restoring its pre-reflow
+  // offset, rather than letting scrollIntoView snap it to the viewport edge.
   $effect(() => {
     isPanelOpen; // track panel open/close
     const idx = untrack(() => selectedIndex);
-    if (idx !== null) tick().then(() => scrollToIndex(idx));
+    const anchor = pendingScrollAnchor;
+    pendingScrollAnchor = null;
+    if (idx === null) return;
+    tick().then(() => {
+      const newOffset = cellViewportOffset(idx);
+      if (anchor !== null && newOffset !== null && gridContainerEl) {
+        gridContainerEl.scrollTop += newOffset - anchor;
+      } else {
+        scrollToIndex(idx);
+      }
+    });
   });
 
   function openPanelAtIndex(index: number) {
     if (index < 0 || index >= images.length) return;
     if (panelWidthPct === null) panelWidthPct = 50;
+    pendingScrollAnchor = cellViewportOffset(index);
     isPanelOpen = true;
     navigateTo(index);
   }
 
   function closePanel() {
+    pendingScrollAnchor = cellViewportOffset(selectedIndex);
     isPanelOpen = false;
     isResizingPanel = false;
   }
@@ -1035,6 +1060,9 @@
             <div class="meta-row"><span>Size</span><span>{formatBytes(selectedImage.file_size)}</span></div>
             <div class="meta-row"><span>Created</span><span>{formatDate(selectedImage.created_at)}</span></div>
             <div class="meta-row"><span>Modified</span><span>{formatDate(selectedImage.modified_at)}</span></div>
+            {#if clusterByPath.has(selectedImage.path)}
+              <div class="meta-row"><span>Cluster</span><span>{clusterLabel(clusterByPath.get(selectedImage.path)!)}</span></div>
+            {/if}
             {#if selectedImage.sort_score !== null && selectedImage.sort_score !== undefined}
               <div class="meta-row"><span>Distance</span><span>{selectedImage.sort_score.toFixed(4)}</span></div>
             {/if}
