@@ -16,6 +16,13 @@ use hdbscan::{DistanceMetric, Hdbscan, HdbscanHyperParams};
 /// (and t-SNE's neighbour sampling needs a reasonable population to draw from).
 const MIN_IMAGES: usize = 20;
 
+/// The automatic minimum cluster size for a library of `n` images: ~1% of the
+/// collection, bounded so tiny libraries still cluster and huge ones don't
+/// fragment. Shared by `compute` and the Compute Clusters dialog's defaults.
+pub fn default_min_cluster_size(n: usize) -> usize {
+    (n / 100).clamp(5, 50)
+}
+
 /// One image placed in the 2D projection and assigned to a cluster.
 #[derive(Clone, Serialize, Deserialize)]
 pub struct ClusterPoint {
@@ -101,7 +108,7 @@ pub fn compute(
     // caller-supplied value (from the Compute Clusters dialog) overrides this.
     let min_cluster_size = min_cluster_size
         .filter(|&v| v >= 2)
-        .unwrap_or_else(|| (n / 100).clamp(5, 50));
+        .unwrap_or_else(|| default_min_cluster_size(n));
     // `min_samples` is the density bar a point must clear to be pulled into a
     // cluster. Left unset it defaults to `min_cluster_size`, which is strict
     // enough to shave off border images that sit visually and semantically

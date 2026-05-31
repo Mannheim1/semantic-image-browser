@@ -703,6 +703,19 @@ async fn compute_clusters(
     Ok(summary)
 }
 
+/// The minimum cluster size the app would pick automatically for the current
+/// library size, so the Compute Clusters dialog can pre-fill it as the default.
+#[tauri::command]
+async fn get_default_min_cluster_size(
+    state: tauri::State<'_, AppState>,
+) -> Result<usize, String> {
+    let n = {
+        let table = state.table.lock().await;
+        database::get_all_paths(&table).await?.len()
+    };
+    Ok(cluster::default_min_cluster_size(n))
+}
+
 /// Return the most recently computed clustering result, or `None` if clusters
 /// have never been computed (the result is loaded from disk at startup, so a
 /// previous session's run is available here too).
@@ -932,6 +945,7 @@ pub fn run() {
             test_bundle_urls,
             open_popup,
             compute_clusters,
+            get_default_min_cluster_size,
             get_cluster_result,
             get_cluster_images,
             get_images_for_paths

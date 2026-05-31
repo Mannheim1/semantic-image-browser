@@ -1,10 +1,25 @@
 <script lang="ts">
   import "$lib/theme.css";
+  import { invoke } from "@tauri-apps/api/core";
   import { emit } from "@tauri-apps/api/event";
   import { getCurrentWindow } from "@tauri-apps/api/window";
+  import { onMount } from "svelte";
 
   let minClusterSize = $state("");
   let maxClusterSize = $state("");
+
+  // Pre-fill the minimum cluster size with the value the app would choose for
+  // the current library, so the dialog opens showing the real default rather
+  // than a bare placeholder. Max cluster size has no numeric default ("No
+  // limit"), so it stays blank.
+  onMount(async () => {
+    try {
+      const def: number = await invoke("get_default_min_cluster_size");
+      minClusterSize = String(def);
+    } catch {
+      // Leave blank; the backend still applies the auto default on Compute.
+    }
+  });
 
   // Parse a field to a positive integer, or null when blank/invalid (= auto).
   function parseField(value: string): number | null {
