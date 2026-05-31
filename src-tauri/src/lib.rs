@@ -671,6 +671,8 @@ async fn open_popup(
 #[tauri::command]
 async fn compute_clusters(
     state: tauri::State<'_, AppState>,
+    min_cluster_size: Option<usize>,
+    max_cluster_size: Option<usize>,
 ) -> Result<cluster::ClusterSummary, String> {
     let data = {
         let table = state.table.lock().await;
@@ -678,9 +680,11 @@ async fn compute_clusters(
     };
 
     // PaCMAP + HDBSCAN are CPU-bound; keep them off the async runtime.
-    let result = tauri::async_runtime::spawn_blocking(move || cluster::compute(data))
-        .await
-        .map_err(|e| format!("Clustering task failed: {}", e))??;
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        cluster::compute(data, min_cluster_size, max_cluster_size)
+    })
+    .await
+    .map_err(|e| format!("Clustering task failed: {}", e))??;
 
     let summary = cluster::ClusterSummary {
         num_clusters: result.num_clusters,

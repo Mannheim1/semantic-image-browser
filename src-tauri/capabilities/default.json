@@ -12,6 +12,7 @@
     "dialog:default",
     "core:webview:allow-set-webview-zoom",
     "core:window:allow-is-fullscreen",
-    "core:window:allow-set-fullscreen"
+    "core:window:allow-set-fullscreen",
+    "core:window:allow-close"
   ]
 }

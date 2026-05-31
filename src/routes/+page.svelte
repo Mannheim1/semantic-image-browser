@@ -112,11 +112,17 @@
     }
   }
 
-  async function computeClusters() {
+  async function computeClusters(
+    minClusterSize: number | null = null,
+    maxClusterSize: number | null = null
+  ) {
     if (isClustering) return;
     isClustering = true;
     try {
-      const summary: ClusterSummary = await invoke("compute_clusters");
+      const summary: ClusterSummary = await invoke("compute_clusters", {
+        minClusterSize,
+        maxClusterSize,
+      });
       await loadClusters();
       // Notify any open cluster windows to refresh from the new result.
       await emit("clusters_ready");
@@ -869,6 +875,13 @@
       showPaths(event.payload.paths);
     });
 
+    const unlistenStartClusteringPromise = listen<{
+      minClusterSize: number | null;
+      maxClusterSize: number | null;
+    }>("start-clustering", (event) => {
+      computeClusters(event.payload.minClusterSize, event.payload.maxClusterSize);
+    });
+
     return () => {
       unlistenScanPromise.then((unlisten) => unlisten());
       unlistenMenuPromise.then((unlisten) => unlisten());
@@ -877,6 +890,7 @@
       unlistenDirsChangedPromise.then((unlisten) => unlisten());
       unlistenShowClusterPromise.then((unlisten) => unlisten());
       unlistenShowPathsPromise.then((unlisten) => unlisten());
+      unlistenStartClusteringPromise.then((unlisten) => unlisten());
     };
   });
 
@@ -904,7 +918,7 @@
         randomSearch();
         break;
       case "compute_clusters":
-        computeClusters();
+        invoke("open_popup", { route: "/cluster-options", title: "Compute Clusters", width: 380, height: 330, resizable: false });
         break;
       case "view_cluster_browser":
         invoke("open_popup", { route: "/clusters", title: "Cluster Browser", width: 900, height: 650, resizable: true });

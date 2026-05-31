@@ -45,8 +45,16 @@ pub struct ClusterSummary {
 /// Run Barnes-Hut t-SNE (to 2D) followed by HDBSCAN on the given
 /// `(path, embedding)` pairs.
 ///
+/// `min_cluster_size` and `max_cluster_size` are optional overrides for the
+/// HDBSCAN hyper parameters of the same name; `None` keeps the auto-scaled
+/// default (min) or no cap (max).
+///
 /// This is CPU-bound and blocking; call it from a blocking context.
-pub fn compute(data: Vec<(String, Vec<f32>)>) -> Result<ClusterResult, String> {
+pub fn compute(
+    data: Vec<(String, Vec<f32>)>,
+    min_cluster_size: Option<usize>,
+    max_cluster_size: Option<usize>,
+) -> Result<ClusterResult, String> {
     let n = data.len();
     if n < MIN_IMAGES {
         return Err(format!(
@@ -89,8 +97,11 @@ pub fn compute(data: Vec<(String, Vec<f32>)>) -> Result<ClusterResult, String> {
         .collect();
 
     // Scale the minimum cluster size with the library so large collections do
-    // not produce a swarm of tiny clusters, while small ones still cluster.
-    let min_cluster_size = (n / 100).clamp(5, 50);
+    // not produce a swarm of tiny clusters, while small ones still cluster. A
+    // caller-supplied value (from the Compute Clusters dialog) overrides this.
+    let min_cluster_size = min_cluster_size
+        .filter(|&v| v >= 2)
+        .unwrap_or_else(|| (n / 100).clamp(5, 50));
     // `min_samples` is the density bar a point must clear to be pulled into a
     // cluster. Left unset it defaults to `min_cluster_size`, which is strict
     // enough to shave off border images that sit visually and semantically
@@ -98,11 +109,16 @@ pub fn compute(data: Vec<(String, Vec<f32>)>) -> Result<ClusterResult, String> {
     // Halving it loosens *membership* — reclaiming those border images — without
     // changing how many clusters form (`min_cluster_size` still gates that).
     let min_samples = (min_cluster_size / 2).max(1);
-    let hyper = HdbscanHyperParams::builder()
+    let mut builder = HdbscanHyperParams::builder()
         .min_cluster_size(min_cluster_size)
         .min_samples(min_samples)
-        .dist_metric(DistanceMetric::Euclidean)
-        .build();
+        .dist_metric(DistanceMetric::Euclidean);
+    // Capping cluster size makes HDBSCAN reject an oversized blob and select its
+    // smaller sub-clusters instead, breaking up one dominant group.
+    if let Some(max) = max_cluster_size.filter(|&v| v >= 2) {
+        builder = builder.max_cluster_size(max);
+    }
+    let hyper = builder.build();
     let labels = Hdbscan::new(&coords, hyper)
         .cluster()
         .map_err(|e| format!("HDBSCAN clustering failed: {}", e))?;
