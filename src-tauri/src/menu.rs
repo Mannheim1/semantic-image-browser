@@ -21,9 +21,9 @@ pub fn build_menu(app: &mut tauri::App, config: &AppConfig) -> Result<Menu<Wry>,
     // ── File menu ───────────────────────────────────────────────────────────
     let file_menu = {
         let b = SubmenuBuilder::new(app, "&File")
-            .item(&MenuItemBuilder::new("&Add Folder...").id("add_folder").build(app)?)
-            .item(&MenuItemBuilder::new("&Rescan All").id("rescan").build(app)?)
-            .item(&MenuItemBuilder::new("&Manage Folders...").id("manage_folders").build(app)?)
+            .item(&MenuItemBuilder::new("&Add Folder...").id("add_folder").accelerator("CmdOrCtrl+O").build(app)?)
+            .item(&MenuItemBuilder::new("&Rescan All").id("rescan").accelerator("CmdOrCtrl+R").build(app)?)
+            .item(&MenuItemBuilder::new("&Manage Folders...").id("manage_folders").accelerator("CmdOrCtrl+Shift+O").build(app)?)
             .separator()
             .item(&MenuItemBuilder::new("&Open App Data Folder").id("view_files").build(app)?)
             .separator()
@@ -84,10 +84,10 @@ pub fn build_menu(app: &mut tauri::App, config: &AppConfig) -> Result<Menu<Wry>,
     let compute_clusters_label = "&Compute Clusters";
 
     let clusters_menu = SubmenuBuilder::new(app, "C&lusters")
-        .item(&MenuItemBuilder::new(compute_clusters_label).id("compute_clusters").build(app)?)
+        .item(&MenuItemBuilder::new(compute_clusters_label).id("compute_clusters").accelerator("CmdOrCtrl+K").build(app)?)
         .separator()
-        .item(&MenuItemBuilder::new("Cluster &Browser").id("view_cluster_browser").build(app)?)
-        .item(&MenuItemBuilder::new("2D &Map").id("view_cluster_map").build(app)?)
+        .item(&MenuItemBuilder::new("Cluster &Browser").id("view_cluster_browser").accelerator("CmdOrCtrl+1").build(app)?)
+        .item(&MenuItemBuilder::new("2D &Map").id("view_cluster_map").accelerator("CmdOrCtrl+2").build(app)?)
         .build()?;
 
     // ── Help menu ───────────────────────────────────────────────────────────
@@ -99,7 +99,7 @@ pub fn build_menu(app: &mut tauri::App, config: &AppConfig) -> Result<Menu<Wry>,
         #[cfg(target_os = "macos")]
         let b = SubmenuBuilder::new(app, "&Help");
 
-        b.item(&MenuItemBuilder::new("View &Controls").id("view_controls").build(app)?)
+        b.item(&MenuItemBuilder::new("View &Controls").id("view_controls").accelerator("F1").build(app)?)
             .build()?
     };
 
