@@ -43,25 +43,41 @@
     if (defaults) applyDefaults(defaults);
   }
 
-  // Parse an integer field, or null when blank/invalid (= auto). `min` is the
-  // smallest accepted value (2 for cluster sizes, 1 for min samples).
-  function intField(value: string, min: number): number | null {
-    const n = Number.parseInt(value, 10);
-    return Number.isFinite(n) && n >= min ? n : null;
+  // Snap an integer field to the nearest valid whole number: round to an
+  // integer, then clamp up to `min`. A blank field stays blank (= auto). Garbage
+  // that isn't a number also clears to blank. Returns the normalised text.
+  function snapInt(value: string, min: number): string {
+    if (String(value).trim() === "") return "";
+    const n = Math.round(Number(value));
+    return Number.isFinite(n) ? String(Math.max(n, min)) : "";
   }
 
-  // Parse a non-negative float field, or null when blank/invalid (= auto).
-  function floatField(value: string): number | null {
-    const n = Number.parseFloat(value);
-    return Number.isFinite(n) && n >= 0 ? n : null;
+  // Snap a rational field to the nearest valid value: clamp up to `min`, keeping
+  // the decimal. A blank field stays blank (= auto); garbage clears to blank.
+  function snapFloat(value: string, min: number): string {
+    if (String(value).trim() === "") return "";
+    const n = Number(value);
+    return Number.isFinite(n) ? String(Math.max(n, min)) : "";
+  }
+
+  // Parse a normalised field to a number, or null when blank (= auto).
+  function toNumber(value: string): number | null {
+    return value === "" ? null : Number(value);
   }
 
   async function compute() {
+    // Snap every field to its nearest valid value first, so an out-of-range or
+    // non-integer entry becomes the closest legal number instead of reverting
+    // to auto.
+    minClusterSize = snapInt(minClusterSize, 2);
+    maxClusterSize = snapInt(maxClusterSize, 2);
+    minSamples = snapInt(minSamples, 1);
+    epsilon = snapFloat(epsilon, 0);
     await emit("start-clustering", {
-      minClusterSize: intField(minClusterSize, 2),
-      maxClusterSize: intField(maxClusterSize, 2),
-      minSamples: intField(minSamples, 1),
-      epsilon: floatField(epsilon),
+      minClusterSize: toNumber(minClusterSize),
+      maxClusterSize: toNumber(maxClusterSize),
+      minSamples: toNumber(minSamples),
+      epsilon: toNumber(epsilon),
     });
     await getCurrentWindow().close();
   }
@@ -89,6 +105,7 @@
       min="2"
       placeholder="Auto"
       bind:value={minClusterSize}
+      onblur={() => (minClusterSize = snapInt(minClusterSize, 2))}
     />
     <span class="hint">
       Smallest group that counts as a cluster. Smaller = more, finer clusters.
@@ -103,6 +120,7 @@
       min="2"
       placeholder="No limit"
       bind:value={maxClusterSize}
+      onblur={() => (maxClusterSize = snapInt(maxClusterSize, 2))}
     />
     <span class="hint">
       Caps a cluster's size, splitting up one dominant group. Blank = no limit.
@@ -117,6 +135,7 @@
       min="1"
       placeholder="Auto"
       bind:value={minSamples}
+      onblur={() => (minSamples = snapInt(minSamples, 1))}
     />
     <span class="hint">
       How dense a point's neighbourhood must be to join a cluster. Lower = fewer
@@ -133,6 +152,7 @@
       step="0.1"
       placeholder="0"
       bind:value={epsilon}
+      onblur={() => (epsilon = snapFloat(epsilon, 0))}
     />
     <span class="hint">
       Distance threshold that merges nearby clusters and pulls in stray points.
