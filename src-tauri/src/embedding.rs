@@ -529,7 +529,7 @@ fn rgb_to_nchw_normalized(rgb_data: &[u8], width: u32, height: u32) -> Vec<f32> 
 }
 
 /// L2 normalize a vector.
-fn l2_normalize(v: &[f32]) -> Vec<f32> {
+pub(crate) fn l2_normalize(v: &[f32]) -> Vec<f32> {
     let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
     if norm > 0.0 {
         v.iter().map(|x| x / norm).collect()

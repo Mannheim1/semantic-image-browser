@@ -252,7 +252,11 @@ async fn get_random_images(state: tauri::State<'_, AppState>) -> Result<Vec<data
 /// slots 2-5 to allow switching models without recalculating embeddings, but
 /// only slot 1 is used for search at this time.
 #[tauri::command]
-async fn search_images(state: tauri::State<'_, AppState>, query: String) -> Result<Vec<database::SearchResult>, String> {
+async fn search_images(
+    state: tauri::State<'_, AppState>,
+    query: String,
+    exclude: Option<String>,
+) -> Result<Vec<database::SearchResult>, String> {
     let table = state.table.lock().await;
     if query.trim().is_empty() {
         let images = database::get_initial_images(&table).await?;
@@ -270,31 +274,60 @@ async fn search_images(state: tauri::State<'_, AppState>, query: String) -> Resu
         return Ok(results);
     }
 
-    // Try to generate text embedding using the backend
-    let query_embedding = if let Ok(backend_guard) = state.embedding_backend.read() {
-        if let Some(backend) = backend_guard.as_ref() {
-            match backend.embed_text(&query) {
-                Ok(emb) => Some(emb),
-                Err(e) => {
-                    eprintln!("Text embedding failed, falling back to filename search: {}", e);
-                    None
-                }
-            }
-        } else {
-            None
-        }
-    } else {
-        None
-    };
-
     // Use vector search if we have an embedding, otherwise fall back to filename search
-    if let Some(embedding) = query_embedding {
+    if let Some(embedding) = embed_query(state.inner(), &query, exclude.as_deref().unwrap_or("")) {
         // Return top 100 results, user can scroll through them
         database::search_by_embedding(&table, &embedding, 100).await
     } else {
         database::search_by_filename(&table, &query).await
     }
 }
+
+/// Strength of the negative-search subtraction: how hard a result is steered away
+/// from the excluded concept, as `normalize(positive - ALPHA * negative)`.
+// TODO: ALPHA was picked by eye. Fine-tune against real queries — too low does
+// nothing, too high drags in unrelated images that merely lack the excluded term.
+const NEGATIVE_SEARCH_ALPHA: f32 = 0.35;
+
+/// Embed `query` for vector search, steering the result away from `exclude` when
+/// it is non-empty (negative search). Both terms run through the same text
+/// encoder; the excluded direction is subtracted and the result re-normalized so
+/// it stays comparable to the stored image vectors. Returns `None` when no text
+/// backend is available, so the caller can fall back to filename search.
+fn embed_query(state: &AppState, query: &str, exclude: &str) -> Option<Vec<f32>> {
+    let backend_guard = state.embedding_backend.read().ok()?;
+    let backend = backend_guard.as_ref()?;
+    let positive = match backend.embed_text(query) {
+        Ok(emb) => emb,
+        Err(e) => {
+            eprintln!("Text embedding failed, falling back to filename search: {}", e);
+            return None;
+        }
+    };
+    if exclude.trim().is_empty() {
+        return Some(positive);
+    }
+    match backend.embed_text(exclude) {
+        Ok(negative) => {
+            let combined: Vec<f32> = positive
+                .iter()
+                .zip(negative.iter())
+                .map(|(p, n)| p - NEGATIVE_SEARCH_ALPHA * n)
+                .collect();
+            Some(embedding::l2_normalize(&combined))
+        }
+        Err(e) => {
+            eprintln!("Exclude embedding failed, ignoring exclude term: {}", e);
+            Some(positive)
+        }
+    }
+}
+
+// TODO: "Search by image" — let the user pick an arbitrary image file from
+// their device (not necessarily one in the library), embed it on the fly via
+// the vision backend (preprocess pixels + `embed_preprocessed`), and feed that
+// vector into `search_by_embedding`. Unlike `search_similar_images` below, the
+// source image won't have a stored embedding, so it must be computed here.
 
 /// Search for images similar to a given image by path.
 /// Uses the stored embedding from the database (does not re-compute).
@@ -321,26 +354,14 @@ async fn search_images_filtered(
     query: String,
     filter: FilterOptions,
     sort: SortOptions,
+    exclude: Option<String>,
 ) -> Result<Vec<database::SearchResult>, String> {
     let table = state.table.lock().await;
 
-    // Generate text embedding for the query if available
+    // Generate text embedding for the query if available, steered away from the
+    // exclude term when present.
     let query_embedding = if !query.trim().is_empty() {
-        if let Ok(backend_guard) = state.embedding_backend.read() {
-            if let Some(backend) = backend_guard.as_ref() {
-                match backend.embed_text(&query) {
-                    Ok(emb) => Some(emb),
-                    Err(e) => {
-                        eprintln!("Text embedding failed: {}", e);
-                        None
-                    }
-                }
-            } else {
-                None
-            }
-        } else {
-            None
-        }
+        embed_query(state.inner(), &query, exclude.as_deref().unwrap_or(""))
     } else {
         None
     };

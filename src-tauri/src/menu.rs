@@ -56,8 +56,14 @@ pub fn build_menu(app: &mut tauri::App, config: &AppConfig) -> Result<Menu<Wry>,
     #[cfg(not(target_os = "macos"))]
     let random_label = "&Random";
 
+    #[cfg(target_os = "macos")]
+    let exclude_bar_label = "Exclude Search Bar";
+    #[cfg(not(target_os = "macos"))]
+    let exclude_bar_label = "&Exclude Search Bar";
+
     let search_menu = SubmenuBuilder::new(app, "&Search")
         .item(&MenuItemBuilder::new(random_label).id("random_search").build(app)?)
+        .item(&CheckMenuItemBuilder::new(exclude_bar_label).id("toggle_exclude_bar").checked(false).build(app)?)
         .separator()
         .item(&SubmenuBuilder::new(app, "Sort &by...")
             .item(&MenuItemBuilder::new("&Relevance").id("sort_relevance").build(app)?)

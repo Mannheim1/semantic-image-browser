@@ -32,6 +32,10 @@
   }
 
   let searchQuery = $state("");
+  // Negative search: a second, smaller search bar (toggled from Search → Exclude
+  // Search Bar) whose term steers results *away* from a concept.
+  let excludeQuery = $state("");
+  let showExcludeBar = $state(false);
   let images = $state<ImageInfo[]>([]);
   let thumbnails = $state<Record<string, string | null>>({});
   let isLoading = $state(false);
@@ -180,6 +184,7 @@
   // searched state so undo/redo can restore exact results without re-querying.
   interface SearchSnapshot {
     searchQuery: string;
+    excludeQuery: string;
     similarToImage: ImageInfo | null;
     displayedCluster: number | null;
     displayedSelection: number | null;
@@ -331,6 +336,7 @@
     displayedSelection = null;
     isLoading = true;
     try {
+      const exclude = showExcludeBar ? excludeQuery : "";
       let nextImages: ImageInfo[];
       // Use filtered search if any filters are active, otherwise use simple search
       if (hasActiveFilters) {
@@ -338,9 +344,10 @@
           query,
           filter: buildFilterOptions(),
           sort: buildSortOptions(),
+          exclude,
         });
       } else {
-        nextImages = await invoke("search_images", { query });
+        nextImages = await invoke("search_images", { query, exclude });
       }
       if (requestId !== latestSearchRequestId) return;
       images = nextImages;
@@ -449,10 +456,19 @@
     searchTimeout = setTimeout(() => search(value), 300);
   }
 
+  // The exclude term re-runs the current query, so debounce against the same
+  // timer and search on the existing searchQuery.
+  function handleExcludeInput(e: Event) {
+    excludeQuery = (e.target as HTMLInputElement).value;
+    if (searchTimeout) clearTimeout(searchTimeout);
+    searchTimeout = setTimeout(() => search(searchQuery), 300);
+  }
+
   function recordHistory() {
     if (isNavigatingHistory) return;
     const snapshot: SearchSnapshot = {
       searchQuery,
+      excludeQuery,
       similarToImage,
       displayedCluster,
       displayedSelection,
@@ -477,6 +493,7 @@
     selectedIndex = null;
     selectedImage = null;
     searchQuery = snapshot.searchQuery;
+    excludeQuery = snapshot.excludeQuery;
     similarToImage = snapshot.similarToImage;
     displayedCluster = snapshot.displayedCluster;
     displayedSelection = snapshot.displayedSelection;
@@ -928,6 +945,14 @@
       case "random_search":
         randomSearch();
         break;
+      case "toggle_exclude_bar":
+        showExcludeBar = !showExcludeBar;
+        // Hiding the bar drops its effect, so re-run the query if it held a term.
+        if (!showExcludeBar && excludeQuery !== "") {
+          excludeQuery = "";
+          search(searchQuery);
+        }
+        break;
       case "compute_clusters":
         // macOS renders the form's text a little larger, so give it extra height.
         invoke("open_popup", { route: "/cluster-options", title: "Compute Clusters", width: 400, height: isMac ? 530 : 490, resizable: false });
@@ -1056,6 +1081,20 @@
         disabled={searchBarDisabled}
       />
     </div>
+
+    {#if showExcludeBar}
+      <div class="exclude-wrapper">
+        <input
+          type="text"
+          class="search-input"
+          placeholder="Exclude..."
+          value={excludeQuery}
+          oninput={handleExcludeInput}
+          spellcheck={false}
+          disabled={searchBarDisabled}
+        />
+      </div>
+    {/if}
 
   </header>
 
@@ -1243,7 +1282,12 @@
   }
 
   .search-wrapper {
-    flex: 1;
+    flex: 10;
+  }
+
+  /* Roughly 30% the width of the main search bar (3 : 10). */
+  .exclude-wrapper {
+    flex: 3;
   }
 
   .search-input:focus {
