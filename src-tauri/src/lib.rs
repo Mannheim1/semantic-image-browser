@@ -673,6 +673,8 @@ async fn compute_clusters(
     state: tauri::State<'_, AppState>,
     min_cluster_size: Option<usize>,
     max_cluster_size: Option<usize>,
+    min_samples: Option<usize>,
+    epsilon: Option<f64>,
 ) -> Result<cluster::ClusterSummary, String> {
     let data = {
         let table = state.table.lock().await;
@@ -681,7 +683,7 @@ async fn compute_clusters(
 
     // PaCMAP + HDBSCAN are CPU-bound; keep them off the async runtime.
     let result = tauri::async_runtime::spawn_blocking(move || {
-        cluster::compute(data, min_cluster_size, max_cluster_size)
+        cluster::compute(data, min_cluster_size, max_cluster_size, min_samples, epsilon)
     })
     .await
     .map_err(|e| format!("Clustering task failed: {}", e))??;
@@ -703,17 +705,18 @@ async fn compute_clusters(
     Ok(summary)
 }
 
-/// The minimum cluster size the app would pick automatically for the current
-/// library size, so the Compute Clusters dialog can pre-fill it as the default.
+/// The hyper parameter values the app would pick automatically for the current
+/// library size, so the Compute Clusters dialog can pre-fill each field with the
+/// value it actually uses.
 #[tauri::command]
-async fn get_default_min_cluster_size(
+async fn get_default_cluster_params(
     state: tauri::State<'_, AppState>,
-) -> Result<usize, String> {
+) -> Result<cluster::DefaultParams, String> {
     let n = {
         let table = state.table.lock().await;
         database::get_all_paths(&table).await?.len()
     };
-    Ok(cluster::default_min_cluster_size(n))
+    Ok(cluster::default_params(n))
 }
 
 /// Return the most recently computed clustering result, or `None` if clusters
@@ -945,7 +948,7 @@ pub fn run() {
             test_bundle_urls,
             open_popup,
             compute_clusters,
-            get_default_min_cluster_size,
+            get_default_cluster_params,
             get_cluster_result,
             get_cluster_images,
             get_images_for_paths

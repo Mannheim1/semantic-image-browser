@@ -7,30 +7,61 @@
 
   let minClusterSize = $state("");
   let maxClusterSize = $state("");
+  let minSamples = $state("");
+  let epsilon = $state("");
 
-  // Pre-fill the minimum cluster size with the value the app would choose for
-  // the current library, so the dialog opens showing the real default rather
-  // than a bare placeholder. Max cluster size has no numeric default ("No
-  // limit"), so it stays blank.
+  type DefaultParams = {
+    min_cluster_size: number;
+    min_samples: number;
+    epsilon: number;
+  };
+
+  // Pre-fill each field with the value the app would actually use for the
+  // current library, so the dialog opens showing the real defaults rather than
+  // bare placeholders. Max cluster size has no numeric default ("No limit").
+  function applyDefaults(def: DefaultParams) {
+    minClusterSize = String(def.min_cluster_size);
+    minSamples = String(def.min_samples);
+    epsilon = String(def.epsilon);
+    maxClusterSize = "";
+  }
+
+  // Keep the fetched defaults so the Reset button can restore them.
+  let defaults: DefaultParams | null = null;
+
   onMount(async () => {
     try {
-      const def: number = await invoke("get_default_min_cluster_size");
-      minClusterSize = String(def);
+      const def = await invoke<DefaultParams>("get_default_cluster_params");
+      defaults = def;
+      applyDefaults(def);
     } catch {
-      // Leave blank; the backend still applies the auto default on Compute.
+      // Leave blank; the backend still applies the auto defaults on Compute.
     }
   });
 
-  // Parse a field to a positive integer, or null when blank/invalid (= auto).
-  function parseField(value: string): number | null {
-    const n = parseInt(value, 10);
-    return Number.isFinite(n) && n >= 2 ? n : null;
+  function reset() {
+    if (defaults) applyDefaults(defaults);
+  }
+
+  // Parse an integer field, or null when blank/invalid (= auto). `min` is the
+  // smallest accepted value (2 for cluster sizes, 1 for min samples).
+  function intField(value: string, min: number): number | null {
+    const n = Number.parseInt(value, 10);
+    return Number.isFinite(n) && n >= min ? n : null;
+  }
+
+  // Parse a non-negative float field, or null when blank/invalid (= auto).
+  function floatField(value: string): number | null {
+    const n = Number.parseFloat(value);
+    return Number.isFinite(n) && n >= 0 ? n : null;
   }
 
   async function compute() {
     await emit("start-clustering", {
-      minClusterSize: parseField(minClusterSize),
-      maxClusterSize: parseField(maxClusterSize),
+      minClusterSize: intField(minClusterSize, 2),
+      maxClusterSize: intField(maxClusterSize, 2),
+      minSamples: intField(minSamples, 1),
+      epsilon: floatField(epsilon),
     });
     await getCurrentWindow().close();
   }
@@ -48,10 +79,7 @@
 <svelte:window onkeydown={onKeydown} />
 
 <div class="dialog">
-  <h1>Compute Clusters</h1>
-  <p class="intro">
-    Leave a field blank to let the app choose automatically. Click Compute to run.
-  </p>
+  <h1>Parameter selection</h1>
 
   <div class="field">
     <label for="min">Minimum cluster size</label>
@@ -62,7 +90,9 @@
       placeholder="Auto"
       bind:value={minClusterSize}
     />
-    <span class="hint">Smaller = more, finer clusters.</span>
+    <span class="hint">
+      Smallest group that counts as a cluster. Smaller = more, finer clusters.
+    </span>
   </div>
 
   <div class="field">
@@ -74,11 +104,45 @@
       placeholder="No limit"
       bind:value={maxClusterSize}
     />
-    <span class="hint">Caps a cluster's size, splitting up one dominant group.</span>
+    <span class="hint">
+      Caps a cluster's size, splitting up one dominant group. Blank = no limit.
+    </span>
+  </div>
+
+  <div class="field">
+    <label for="samples">Minimum samples</label>
+    <input
+      id="samples"
+      type="number"
+      min="1"
+      placeholder="Auto"
+      bind:value={minSamples}
+    />
+    <span class="hint">
+      How dense a point's neighbourhood must be to join a cluster. Lower = fewer
+      unclustered images; higher = tighter clusters, more left out.
+    </span>
+  </div>
+
+  <div class="field">
+    <label for="epsilon">Epsilon</label>
+    <input
+      id="epsilon"
+      type="number"
+      min="0"
+      step="0.1"
+      placeholder="0"
+      bind:value={epsilon}
+    />
+    <span class="hint">
+      Distance threshold that merges nearby clusters and pulls in stray points.
+      Higher = fewer, larger clusters; 0 = off.
+    </span>
   </div>
 
   <div class="actions">
     <button class="btn" onclick={cancel}>Cancel</button>
+    <button class="btn" onclick={reset}>Reset</button>
     <button class="btn btn-primary" onclick={compute}>Compute</button>
   </div>
 </div>
@@ -94,13 +158,6 @@
   h1 {
     font-size: 18px;
     margin: 0;
-  }
-
-  .intro {
-    margin: 0;
-    font-size: 13px;
-    color: var(--text-secondary);
-    line-height: 1.5;
   }
 
   .field {

@@ -114,7 +114,9 @@
 
   async function computeClusters(
     minClusterSize: number | null = null,
-    maxClusterSize: number | null = null
+    maxClusterSize: number | null = null,
+    minSamples: number | null = null,
+    epsilon: number | null = null
   ) {
     if (isClustering) return;
     isClustering = true;
@@ -122,6 +124,8 @@
       const summary: ClusterSummary = await invoke("compute_clusters", {
         minClusterSize,
         maxClusterSize,
+        minSamples,
+        epsilon,
       });
       await loadClusters();
       // Notify any open cluster windows to refresh from the new result.
@@ -878,8 +882,15 @@
     const unlistenStartClusteringPromise = listen<{
       minClusterSize: number | null;
       maxClusterSize: number | null;
+      minSamples: number | null;
+      epsilon: number | null;
     }>("start-clustering", (event) => {
-      computeClusters(event.payload.minClusterSize, event.payload.maxClusterSize);
+      computeClusters(
+        event.payload.minClusterSize,
+        event.payload.maxClusterSize,
+        event.payload.minSamples,
+        event.payload.epsilon
+      );
     });
 
     return () => {
@@ -918,7 +929,8 @@
         randomSearch();
         break;
       case "compute_clusters":
-        invoke("open_popup", { route: "/cluster-options", title: "Compute Clusters", width: 380, height: 330, resizable: false });
+        // macOS renders the form's text a little larger, so give it extra height.
+        invoke("open_popup", { route: "/cluster-options", title: "Compute Clusters", width: 400, height: isMac ? 530 : 490, resizable: false });
         break;
       case "view_cluster_browser":
         invoke("open_popup", { route: "/clusters", title: "Cluster Browser", width: 900, height: 650, resizable: true });
