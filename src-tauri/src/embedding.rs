@@ -45,7 +45,9 @@ pub fn init_ort(dylib_path: &Path) -> Result<(), String> {
 
             match ort::init_from(dylib_path) {
                 Ok(builder) => {
-                    builder.commit();
+                    // ort defaults telemetry to ON, and Microsoft's official Windows
+                    // ORT builds (which we ship) send ETW telemetry. Turn it off.
+                    builder.with_telemetry(false).commit();
                     Ok(())
                 }
                 Err(e) => Err(format!(
